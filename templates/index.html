@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 辯論控制面板</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a26;
+    --border: #2a2a3a;
+    --text: #e0e0e8;
+    --text-dim: #888898;
+    --accent: #6366f1;
+    --accent-hover: #818cf8;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #eab308;
+    --blue: #3b82f6;
+    --orange: #f97316;
+    --purple: #a855f7;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+  }
+  /* ── 設定頁面（全頁） ── */
+  .settings-page {
+    min-height: 100vh; display: flex; justify-content: center;
+    padding: 40px 20px; background: var(--bg); overflow-y: auto;
+  }
+  .settings-inner {
+    width: 100%; max-width: 720px;
+    display: flex; flex-direction: column; gap: 20px;
+  }
+  .settings-inner h1 { font-size: 20px; font-weight: 600; color: var(--accent); }
+  .settings-inner h2 {
+    font-size: 14px; font-weight: 600; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;
+  }
+
+  /* ── 設定覆蓋層（辯論中開啟） ── */
+  .settings-overlay-bg {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5); z-index: 100;
+  }
+  .settings-overlay-bg.active { display: block; }
+  .settings-page.overlay {
+    position: fixed; top: 0; left: 0; width: 420px;
+    min-height: unset; height: 100vh; z-index: 101;
+    background: var(--surface); padding: 0;
+    animation: slideInLeft 0.25s ease; justify-content: flex-start;
+  }
+  .settings-page.overlay .settings-inner { max-width: none; padding: 24px; }
+  .settings-page.overlay .btn-start-group { display: none; }
+  .overlay-header {
+    display: none; justify-content: space-between; align-items: center;
+    padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+  }
+  .settings-page.overlay .overlay-header { display: flex; }
+  @keyframes slideInLeft { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+  @media (max-width: 480px) { .settings-page.overlay { width: 100%; } }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 13px; color: var(--text-dim); font-weight: 500; }
+  input, select, textarea {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; color: var(--text); font-size: 14px; font-family: inherit;
+    outline: none; transition: border-color 0.2s;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 80px; }
+  .row { display: flex; gap: 12px; }
+  .row .field { flex: 1; }
+
+  .participant-card, .moderator-card {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .moderator-card { border-color: rgba(249,115,22,0.4); background: rgba(249,115,22,0.05); }
+  .card-header { display: flex; justify-content: space-between; align-items: center; }
+  .card-header span { font-size: 13px; font-weight: 600; color: var(--accent); }
+  .moderator-card .card-header span { color: var(--orange); }
+  .btn-remove {
+    background: none; border: none; color: var(--red); cursor: pointer;
+    font-size: 18px; padding: 2px 6px; border-radius: 4px;
+  }
+  .btn-remove:hover { background: rgba(239,68,68,0.15); }
+
+  .toggle-row { display: flex; align-items: center; gap: 10px; }
+  .toggle {
+    width: 40px; height: 22px; border-radius: 11px; background: var(--border);
+    position: relative; cursor: pointer; transition: background 0.2s; border: none;
+  }
+  .toggle.on { background: var(--orange); }
+  .toggle::after {
+    content: ''; position: absolute; top: 3px; left: 3px;
+    width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s;
+  }
+  .toggle.on::after { transform: translateX(18px); }
+
+  .btn {
+    padding: 12px 20px; border: none; border-radius: 8px; font-size: 14px;
+    font-weight: 600; cursor: pointer; transition: all 0.2s; font-family: inherit;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-danger { background: var(--red); color: white; }
+  .btn-danger:hover { background: #dc2626; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
+  .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+  .btn-group { display: flex; gap: 8px; }
+
+  /* ── 辯論容器 ── */
+  #debate-container { display: none; height: 100vh; flex-direction: column; }
+
+  /* ── Tab Bar ── */
+  #tab-bar {
+    display: flex; align-items: center; gap: 4px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 8px 12px; overflow-x: auto; flex-shrink: 0;
+  }
+  #tab-bar::-webkit-scrollbar { height: 4px; }
+  #tab-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .debate-tab {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 6px; font-size: 13px;
+    cursor: pointer; border: 1px solid var(--border);
+    background: transparent; color: var(--text-dim); font-family: inherit;
+    white-space: nowrap; transition: all 0.15s;
+  }
+  .debate-tab:hover { border-color: var(--accent); color: var(--text); }
+  .debate-tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .debate-tab .tab-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0;
+  }
+  .debate-tab .tab-dot.running { background: var(--green); animation: pulse 1.5s infinite; }
+  .debate-tab .tab-close {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%;
+    font-size: 11px; line-height: 1; opacity: 0.5;
+    background: none; border: none; cursor: pointer; color: inherit; padding: 0;
+  }
+  .debate-tab .tab-close:hover { opacity: 1; background: rgba(255,255,255,0.2); }
+  .tab-add-btn {
+    padding: 6px 10px; border-radius: 6px; font-size: 16px; line-height: 1;
+    background: transparent; border: 1px dashed var(--border);
+    color: var(--text-dim); cursor: pointer; font-family: inherit; flex-shrink: 0;
+  }
+  .tab-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── 辯論面板（每個 Tab 一個） ── */
+  .debate-panel { display: none; flex-direction: column; height: 100%; min-height: 0; }
+  .debate-panel.active { display: flex; }
+  #tab-contents { flex: 1; min-height: 0; overflow: hidden; }
+
+  /* ── 對話區 ── */
+  .chat-area { display: flex; flex-direction: column; height: 100%; position: relative; }
+  .chat-header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 16px 24px; display: flex; justify-content: space-between; align-items: center;
+    flex-shrink: 0;
+  }
+  .chat-header .status { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .chat-header .actions { display: flex; gap: 8px; align-items: center; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+  .status-dot.active { background: var(--green); animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .chat-messages {
+    flex: 1; overflow-y: auto; padding: 24px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+
+  /* ── 訊息卡片 + Markdown ── */
+  .message {
+    max-width: 85%; padding: 14px 18px; border-radius: 12px;
+    font-size: 14px; line-height: 1.7; word-break: break-word;
+  }
+  .message .speaker {
+    font-size: 12px; font-weight: 700; margin-bottom: 8px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .message .content h1, .message .content h2, .message .content h3 {
+    margin: 12px 0 6px 0; line-height: 1.3;
+  }
+  .message .content h1 { font-size: 18px; }
+  .message .content h2 { font-size: 16px; }
+  .message .content h3 { font-size: 14px; font-weight: 600; }
+  .message .content p { margin: 6px 0; }
+  .message .content strong { font-weight: 700; }
+  .message .content em { font-style: italic; }
+  .message .content ul, .message .content ol {
+    margin: 6px 0; padding-left: 20px;
+  }
+  .message .content li { margin: 3px 0; }
+  .message .content code {
+    background: rgba(255,255,255,0.08); padding: 2px 5px; border-radius: 4px;
+    font-family: 'SF Mono', Monaco, monospace; font-size: 13px;
+  }
+  .message .content blockquote {
+    border-left: 3px solid var(--border); padding-left: 12px;
+    margin: 8px 0; color: var(--text-dim);
+  }
+  .message .content hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+
+  .message.ai-0 { background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.25); align-self: flex-start; }
+  .message.ai-0 .speaker { color: var(--accent); }
+  .message.ai-1 { background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.25); align-self: flex-end; }
+  .message.ai-1 .speaker { color: var(--green); }
+  .message.ai-2 { background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.25); align-self: flex-start; }
+  .message.ai-2 .speaker { color: var(--yellow); }
+  .message.ai-3 { background: rgba(168,85,247,0.12); border: 1px solid rgba(168,85,247,0.25); align-self: flex-end; }
+  .message.ai-3 .speaker { color: var(--purple); }
+  .message.moderator {
+    background: rgba(249,115,22,0.10); border: 1px solid rgba(249,115,22,0.30);
+    align-self: center; max-width: 95%;
+  }
+  .message.moderator .speaker { color: var(--orange); }
+  .message.summary { background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.25); align-self: center; max-width: 95%; }
+  .message.summary .speaker { color: var(--blue); }
+  .message.human { background: rgba(168,85,247,0.12); border: 1px solid rgba(168,85,247,0.25); align-self: flex-end; }
+  .message.human .speaker { color: var(--purple); }
+  .message.video-msg {
+    background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.2);
+    align-self: center; max-width: 600px;
+  }
+  .message.video-msg .speaker { color: var(--blue); }
+  .message.video-msg video { max-width: 100%; max-height: 400px; border-radius: 8px; margin-top: 8px; }
+  .message.thinking {
+    color: var(--text-dim); font-style: italic; padding: 8px 14px; font-size: 13px;
+    align-self: center; background: var(--surface2); border: 1px dashed var(--border);
+  }
+
+  .round-divider {
+    text-align: center; color: var(--text-dim); font-size: 12px; padding: 8px; position: relative;
+  }
+  .round-divider::before, .round-divider::after {
+    content: ''; position: absolute; top: 50%; width: 30%; height: 1px; background: var(--border);
+  }
+  .round-divider::before { left: 5%; }
+  .round-divider::after { right: 5%; }
+
+  .human-input-bar { display: none; padding: 16px 24px; background: var(--surface); border-top: 1px solid var(--border); flex-shrink: 0; }
+  .human-input-bar.active { display: flex; gap: 10px; align-items: flex-end; }
+  .human-input-bar .input-wrap { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+  .human-input-bar .input-label-row { display: flex; align-items: center; gap: 12px; }
+  .human-input-bar .input-label { font-size: 12px; color: var(--accent); font-weight: 600; animation: pulse 1.5s infinite; }
+  .countdown-display {
+    font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--green);
+  }
+  .countdown-display.warning { color: var(--yellow); }
+  .countdown-display.critical { color: var(--red); animation: pulse 0.5s infinite; }
+  .human-input-bar textarea { min-height: 60px; max-height: 200px; resize: vertical; }
+  .human-input-bar .btn { height: 44px; white-space: nowrap; }
+
+  /* ── 倒數彈窗 ── */
+  .countdown-modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    z-index: 200; justify-content: center; align-items: center;
+  }
+  .countdown-modal-overlay.active { display: flex; }
+  .countdown-modal {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    padding: 32px; max-width: 400px; text-align: center;
+  }
+  .countdown-modal h3 { margin-bottom: 8px; color: var(--yellow); }
+  .countdown-modal p { margin-bottom: 20px; color: var(--text-dim); font-size: 14px; }
+
+  /* ── 捲動到底部按鈕 ── */
+  .scroll-bottom-btn {
+    position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: white; border: none; border-radius: 20px;
+    padding: 8px 16px; font-size: 12px; cursor: pointer; z-index: 10;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-family: inherit; display: none;
+  }
+  .scroll-bottom-btn:hover { background: var(--accent-hover); }
+
+  /* ── 歷史紀錄 ── */
+  .logs-list { display: flex; flex-direction: column; gap: 4px; }
+  .log-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; border-radius: 8px; font-size: 13px; cursor: pointer; color: var(--text-dim);
+    border: 1px solid transparent;
+  }
+  .log-item:hover { background: var(--surface2); color: var(--text); border-color: var(--border); }
+  .log-item .log-info { display: flex; flex-direction: column; gap: 2px; }
+  .log-item .log-name { font-weight: 500; }
+  .log-item .log-size { font-size: 11px; opacity: 0.6; }
+  .log-item .log-actions { display: flex; gap: 4px; }
+
+  .tabs { display: flex; gap: 4px; background: var(--surface2); border-radius: 8px; padding: 4px; }
+  .tab {
+    flex: 1; padding: 8px 12px; border: none; background: transparent;
+    color: var(--text-dim); font-size: 13px; font-weight: 500; cursor: pointer;
+    border-radius: 6px; font-family: inherit;
+  }
+  .tab.active { background: var(--accent); color: white; }
+
+  .collapsible { max-height: 0; overflow: hidden; transition: max-height 0.3s; }
+  .collapsible.open { max-height: 500px; }
+
+  /* ── 快速生成 ── */
+  .gen-box {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .gen-box h2 { margin: 0; color: var(--green); }
+  .gen-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .gen-tag {
+    padding: 6px 14px; border-radius: 20px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+    font-family: inherit; transition: all 0.2s;
+  }
+  .gen-tag:hover, .gen-tag.active { border-color: var(--green); color: var(--green); background: rgba(34,197,94,0.08); }
+  .gen-row { display: flex; gap: 10px; align-items: flex-end; }
+  .gen-row .field { flex: 1; }
+  .gen-row .field:last-child { flex: 0 0 80px; }
+
+  /* ── Modal ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    z-index: 100; justify-content: center; align-items: center;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
+    width: 90vw; height: 90vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .modal-header {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--surface);
+  }
+  .modal-header h2 { font-size: 16px; color: var(--text); }
+  .modal-body {
+    flex: 1; overflow-y: auto; padding: 24px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .modal-close {
+    background: none; border: none; color: var(--text-dim); font-size: 24px;
+    cursor: pointer; padding: 4px 8px; border-radius: 6px;
+  }
+  .modal-close:hover { color: var(--text); background: var(--surface2); }
+</style>
+</head>
+<body>
+
+<div id="settings-page" class="settings-page">
+  <div class="settings-inner">
+    <div class="overlay-header">
+      <h2 style="margin:0;color:var(--text)">設定</h2>
+      <button class="modal-close" onclick="closeSettings()">x</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h1>AI 辯論控制面板</h1>
+      <button id="btn-back-to-debates" class="btn btn-outline btn-sm" style="display:none" onclick="backToDebates()">返回辯論</button>
+    </div>
+    <div class="tabs">
+      <button class="tab active" onclick="switchSettingsTab(event,'config')">設定</button>
+      <button class="tab" onclick="switchSettingsTab(event,'logs')">歷史紀錄</button>
+    </div>
+    <div id="tab-config">
+      <div class="gen-box">
+        <h2>快速生成</h2>
+        <div class="gen-tags">
+          <button class="gen-tag" onclick="selectCategory(this,'政治')">政治</button>
+          <button class="gen-tag" onclick="selectCategory(this,'財經')">財經</button>
+          <button class="gen-tag" onclick="selectCategory(this,'科技')">科技</button>
+          <button class="gen-tag" onclick="selectCategory(this,'遊戲')">遊戲</button>
+          <button class="gen-tag" onclick="selectCategory(this,'哲學')">哲學</button>
+          <button class="gen-tag" onclick="selectCategory(this,'教育')">教育</button>
+          <button class="gen-tag" onclick="selectCategory(this,'生活')">生活</button>
+          <button class="gen-tag" onclick="selectCategory(this,'AI')">AI</button>
+        </div>
+        <div class="field">
+          <label>大綱（選填，可補充具體方向）</label>
+          <textarea id="gen-outline" rows="2" placeholder="例如：台灣的兩岸政策走向、電動車產業前景..."></textarea>
+        </div>
+        <div class="gen-row">
+          <div class="field">
+            <label>辯論人數</label>
+            <input type="number" id="gen-count" value="3" min="2" max="6">
+          </div>
+          <div class="field">
+            <button class="btn btn-primary" id="btn-generate" onclick="generateConfig()" style="width:100%;margin-top:20px">生成設定</button>
+          </div>
+        </div>
+        <div id="gen-status" style="font-size:12px;color:var(--text-dim);display:none"></div>
+      </div>
+      <div class="field">
+        <label>辯論主題</label>
+        <textarea id="topic">目前最有效的賺錢方式。涵蓋範圍包括但不限於：
+- 預測市場套利（如 Polymarket）
+- AI 應用變現（SaaS、自動化代理）
+- 加密貨幣與 DeFi 策略
+- 傳統投資（股票、房地產、債券）
+- 自媒體與個人品牌
+- 自動化被動收入
+
+請提出具體、可執行的方案，附上預估報酬率與風險評估。
+互相挑戰對方論點，不要和稀泥。</textarea>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>輪數</label>
+          <input type="number" id="rounds" value="30" min="1" max="200">
+        </div>
+        <div class="field">
+          <label>每次回覆 Token 上限</label>
+          <input type="number" id="max_tokens" value="1000" min="100" max="4000" step="100">
+        </div>
+        <div class="field">
+          <label>人類回覆時限（秒）</label>
+          <input type="number" id="human_time_limit" value="120" min="30" max="600" step="10">
+        </div>
+      </div>
+      <div class="toggle-row">
+        <button class="toggle on" id="mod-toggle" onclick="toggleModerator()"></button>
+        <h2 style="margin:0">主持人</h2>
+      </div>
+      <div class="collapsible open" id="mod-section">
+        <div class="moderator-card">
+          <div class="card-header"><span>主持人設定</span></div>
+          <div class="field">
+            <label>名稱</label>
+            <input type="text" id="mod-name" value="Gemini（主持人）">
+          </div>
+          <div class="field">
+            <label>模型</label>
+            <select id="mod-model"></select>
+          </div>
+          <div class="field">
+            <label>附加指示（選填）</label>
+            <textarea id="mod-system" rows="2" placeholder="例如：特別關注 AI 套利相關議題的可行性分析"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="toggle-row">
+        <button class="toggle" id="video-toggle" onclick="toggleVideo()"></button>
+        <h2 style="margin:0">每輪生成場景影片</h2>
+      </div>
+      <h2>參與者</h2>
+      <div id="participants"></div>
+      <button class="btn btn-outline" onclick="addParticipant()" style="width:100%">+ 新增參與者</button>
+      <div class="btn-start-group">
+        <button class="btn btn-primary" id="btn-start" onclick="startDebate()" style="width:100%">開始辯論</button>
+      </div>
+    </div>
+    <div id="tab-logs" style="display:none">
+      <div class="logs-list" id="logs-list">載入中...</div>
+    </div>
+  </div>
+</div>
+
+<div id="settings-overlay-bg" class="settings-overlay-bg" onclick="closeSettings()"></div>
+
+<!-- 多辯論容器 -->
+<div id="debate-container">
+  <div id="tab-bar">
+    <button class="tab-add-btn" onclick="newDebateFromTab()" title="新增辯論">+</button>
+  </div>
+  <div id="tab-contents"></div>
+</div>
+
+<!-- 倒數確認彈窗 -->
+<div class="countdown-modal-overlay" id="countdown-modal" role="dialog" aria-modal="true" aria-label="倒數計時確認">
+  <div class="countdown-modal" aria-live="assertive">
+    <h3>時間即將到期</h3>
+    <p>剩餘不到 30 秒，是否繼續輸入？</p>
+    <div class="btn-group" style="justify-content:center">
+      <button class="btn btn-primary" onclick="continueInput()">繼續輸入</button>
+      <button class="btn btn-outline" onclick="skipFromModal()">跳過此輪</button>
+    </div>
+  </div>
+</div>
+
+<!-- 歷史紀錄 Modal -->
+<div class="modal-overlay" id="log-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="log-modal-title">辯論紀錄</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-outline btn-sm" onclick="downloadCurrentLog()">下載 .md</button>
+        <button class="modal-close" onclick="closeLogModal()">x</button>
+      </div>
+    </div>
+    <div class="modal-body" id="log-modal-body"></div>
+  </div>
+</div>
+
+<script>
+// ── Markdown 渲染 ──
+function renderMarkdown(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+  html = html.replace(/^---$/gm, '<hr>');
+  html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/\n{2,}/g, '</p><p>');
+  html = html.replace(/\n/g, '<br>');
+  return '<p>' + html + '</p>';
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ── 預設 ──
+const DEFAULT_PARTICIPANTS = [
+  { name: 'GPT-5.4（策略分析師）', model: 'gpt-5.4',
+    system: '你是 GPT-5.4，一位數據驅動的策略分析師。你偏好有數據支撐、可量化的賺錢策略。對於過度樂觀的預期要用數據反駁。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' },
+  { name: 'Grok-4.1（激進創新派）', model: 'grok-4.1-expert',
+    system: '你是 Grok-4.1，一位激進的科技與創新趨勢專家。你偏好高報酬、前沿技術的賺錢方式，願意承擔較高風險。善於發現被低估的機會，挑戰保守觀點。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' },
+  { name: 'Claude（務實風險管理者）', model: 'claude-opus-4-6',
+    system: '你是 Claude，一位務實的風險管理者與長期投資思考者。你重視風險調整後報酬、可持續性、以及實際可執行性。會指出其他 AI 忽略的風險和盲點。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' }
+];
+
+let availableModels = ['gpt-5.4', 'grok-4.1-expert'];
+let participantCount = 0;
+let currentLogFilename = '';
+
+// ── 多辯論 Tab 管理 ──
+const tabs = [];
+let activeTabId = null;
+let countdownModalTabId = null; // 目前彈窗對應的 tabId
+
+function createTab(sessionId, moderatorName) {
+  const id = 'tab-' + Date.now();
+  const tab = {
+    id,
+    sessionId,
+    running: true,
+    eventSource: null,
+    moderatorName: moderatorName || '',
+    participants: getParticipants(),
+    countdownTimer: null,
+    countdownSeconds: 0,
+    countdownWarningShown: false,
+    countdownSkipped: false,
+  };
+  tabs.push(tab);
+  return tab;
+}
+
+function getTab(tabId) {
+  return tabs.find(t => t.id === tabId) || null;
+}
+
+function getActiveTab() {
+  return getTab(activeTabId);
+}
+
+// 取得 panel 內的元素
+function panelEl(tabId, selector) {
+  const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
+  return panel ? panel.querySelector(selector) : null;
+}
+
+// ── 智慧捲動 ──
+function isNearBottom(container) {
+  return container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+}
+function smartScroll(tabId, container) {
+  if (isNearBottom(container)) {
+    container.scrollTop = container.scrollHeight;
+  } else {
+    const btn = panelEl(tabId, '.scroll-bottom-btn');
+    if (btn) btn.style.display = 'block';
+  }
+}
+function scrollToBottom(tabId) {
+  const container = panelEl(tabId, '.chat-messages');
+  if (!container) return;
+  container.scrollTop = container.scrollHeight;
+  const btn = panelEl(tabId, '.scroll-bottom-btn');
+  if (btn) btn.style.display = 'none';
+}
+
+// ── 建立辯論面板 ──
+function buildDebatePanel(tabId) {
+  const panel = document.createElement('div');
+  panel.className = 'debate-panel';
+  panel.dataset.tabId = tabId;
+  panel.innerHTML = `
+    <div class="chat-area">
+      <div class="chat-header">
+        <div class="status">
+          <div class="status-dot active"></div>
+          <span class="status-text">辯論中</span>
+        </div>
+        <div class="actions">
+          <span class="round-info" style="font-size:13px;color:var(--text-dim)"></span>
+          <button class="btn btn-outline btn-sm" onclick="newDebateFromTab()">設定</button>
+          <button class="btn btn-danger btn-sm btn-stop" onclick="stopDebate('${tabId}')">停止</button>
+          <button class="btn btn-outline btn-sm btn-back" style="display:none" onclick="newDebateFromTab()">返回設定</button>
+        </div>
+      </div>
+      <div class="chat-messages"></div>
+      <button class="scroll-bottom-btn" onclick="scrollToBottom('${tabId}')">新訊息</button>
+      <div class="human-input-bar">
+        <div class="input-wrap">
+          <div class="input-label-row">
+            <span class="input-label">輪到你發言了</span>
+            <span class="countdown-display"></span>
+          </div>
+          <textarea class="human-input-text" placeholder="輸入你的觀點..." onkeydown="handleHumanKeydown(event, '${tabId}')"></textarea>
+        </div>
+        <button class="btn btn-primary" onclick="submitHumanInput('${tabId}')">送出</button>
+        <button class="btn btn-outline" onclick="skipHumanTurn('${tabId}')">跳過</button>
+      </div>
+    </div>`;
+  document.getElementById('tab-contents').appendChild(panel);
+
+  // 監聽捲動
+  const msgContainer = panel.querySelector('.chat-messages');
+  msgContainer.addEventListener('scroll', () => {
+    if (isNearBottom(msgContainer)) {
+      const btn = panel.querySelector('.scroll-bottom-btn');
+      if (btn) btn.style.display = 'none';
+    }
+  });
+
+  return panel;
+}
+
+// ── Tab Bar 渲染 ──
+function renderTabBar() {
+  const bar = document.getElementById('tab-bar');
+  const addBtn = bar.querySelector('.tab-add-btn');
+  // 移除舊 tab 按鈕
+  bar.querySelectorAll('.debate-tab').forEach(el => el.remove());
+
+  tabs.forEach((tab, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'debate-tab' + (tab.id === activeTabId ? ' active' : '');
+
+    const dot = document.createElement('span');
+    dot.className = 'tab-dot' + (tab.running ? ' running' : '');
+    btn.appendChild(dot);
+
+    const label = document.createTextNode(`辯論 ${i + 1}`);
+    btn.appendChild(label);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'tab-close';
+    closeBtn.textContent = 'x';
+    closeBtn.addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab.id); });
+    btn.appendChild(closeBtn);
+
+    btn.addEventListener('click', () => switchToTab(tab.id));
+    bar.insertBefore(btn, addBtn);
+  });
+}
+
+function switchToTab(tabId) {
+  activeTabId = tabId;
+  document.querySelectorAll('.debate-panel').forEach(p => p.classList.remove('active'));
+  const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
+  if (panel) panel.classList.add('active');
+  renderTabBar();
+}
+
+function closeTab(tabId) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  if (tab.running) {
+    if (!confirm('辯論進行中，確定要關閉？辯論將會停止。')) return;
+    if (tab.sessionId) {
+      fetch('/api/stop', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ session_id: tab.sessionId })
+      });
+    }
+  }
+  if (tab.eventSource) tab.eventSource.close();
+  stopCountdown(tabId);
+  // 移除 DOM
+  const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
+  if (panel) panel.remove();
+  // 移除 tab 資料
+  const idx = tabs.indexOf(tab);
+  if (idx !== -1) tabs.splice(idx, 1);
+  // 如果沒有 tab 了，回到設定頁
+  if (tabs.length === 0) {
+    backToSettings();
+  } else if (activeTabId === tabId) {
+    switchToTab(tabs[tabs.length - 1].id);
+  } else {
+    renderTabBar();
+  }
+}
+
+function newDebateFromTab() {
+  // 全頁設定模式（隱藏辯論容器，顯示全頁設定）
+  document.getElementById('debate-container').style.display = 'none';
+  document.getElementById('settings-page').style.display = '';
+  document.getElementById('settings-page').classList.remove('overlay');
+  document.getElementById('settings-overlay-bg').classList.remove('active');
+  // 顯示「返回辯論」按鈕
+  const backBtn = document.getElementById('btn-back-to-debates');
+  if (backBtn) backBtn.style.display = tabs.length > 0 ? '' : 'none';
+}
+
+// ── 設定持久化（localStorage）──
+function saveConfig() {
+  const config = {
+    topic: document.getElementById('topic').value,
+    rounds: document.getElementById('rounds').value,
+    max_tokens: document.getElementById('max_tokens').value,
+    modEnabled: document.getElementById('mod-toggle').classList.contains('on'),
+    modName: document.getElementById('mod-name').value,
+    modModel: document.getElementById('mod-model').value,
+    modSystem: document.getElementById('mod-system').value,
+    videoEnabled: document.getElementById('video-toggle').classList.contains('on'),
+    humanTimeLimit: document.getElementById('human_time_limit').value,
+    participants: getParticipants(),
+  };
+  localStorage.setItem('debate-config', JSON.stringify(config));
+}
+function loadConfig() {
+  const raw = localStorage.getItem('debate-config');
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+function restoreConfig(saved) {
+  if (!saved) return;
+  document.getElementById('topic').value = saved.topic || '';
+  document.getElementById('rounds').value = saved.rounds || 30;
+  document.getElementById('max_tokens').value = saved.max_tokens || 1000;
+  if (saved.modEnabled !== undefined) {
+    const tog = document.getElementById('mod-toggle');
+    const sec = document.getElementById('mod-section');
+    if (saved.modEnabled) { tog.classList.add('on'); sec.classList.add('open'); }
+    else { tog.classList.remove('on'); sec.classList.remove('open'); }
+  }
+  document.getElementById('mod-name').value = saved.modName || 'Gemini（主持人）';
+  if (saved.modModel) document.getElementById('mod-model').value = saved.modModel;
+  document.getElementById('mod-system').value = saved.modSystem || '';
+  document.getElementById('human_time_limit').value = saved.humanTimeLimit || 120;
+  if (saved.videoEnabled) document.getElementById('video-toggle').classList.add('on');
+  else document.getElementById('video-toggle').classList.remove('on');
+  if (saved.participants && saved.participants.length) {
+    document.getElementById('participants').innerHTML = '';
+    participantCount = 0;
+    saved.participants.forEach(p => addParticipant(p));
+  }
+}
+function initAutoSave() {
+  const panel = document.querySelector('.settings-inner');
+  panel.addEventListener('input', saveConfig);
+  panel.addEventListener('change', saveConfig);
+}
+
+fetch('/api/models').then(r => r.json()).then(data => {
+  availableModels = data.models || availableModels;
+  const saved = loadConfig();
+  populateModeratorModels();
+  if (saved && saved.participants && saved.participants.length) {
+    restoreConfig(saved);
+  } else {
+    initParticipants();
+  }
+  initAutoSave();
+}).catch(() => {
+  const saved = loadConfig();
+  populateModeratorModels();
+  if (saved && saved.participants && saved.participants.length) {
+    restoreConfig(saved);
+  } else {
+    initParticipants();
+  }
+  initAutoSave();
+});
+
+// ── 快速生成 ──
+let selectedCategory = '';
+function selectCategory(el, cat) {
+  document.querySelectorAll('.gen-tag').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  selectedCategory = cat;
+}
+function generateConfig() {
+  const category = selectedCategory;
+  const outline = document.getElementById('gen-outline').value.trim();
+  const count = document.getElementById('gen-count').value;
+  if (!category && !outline) { alert('請選擇一個分類或輸入大綱'); return; }
+
+  const btn = document.getElementById('btn-generate');
+  const status = document.getElementById('gen-status');
+  btn.disabled = true; btn.textContent = '生成中...';
+  status.style.display = 'block'; status.textContent = '正在用 AI 生成辯論設定，請稍候...';
+
+  const modModel = document.getElementById('mod-model').value || 'claude-sonnet-4-6';
+  fetch('/api/generate_config', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ category, outline, count, model: modModel })
+  }).then(r => r.json()).then(data => {
+    btn.disabled = false; btn.textContent = '生成設定';
+    if (data.error) { status.textContent = '生成失敗：' + data.error; return; }
+    status.style.display = 'none';
+    if (data.topic) document.getElementById('topic').value = data.topic;
+    if (data.participants && data.participants.length) {
+      document.getElementById('participants').innerHTML = '';
+      participantCount = 0;
+      const aiModels = availableModels.filter(m => !m.toLowerCase().startsWith('human'));
+      data.participants.forEach((p, i) => {
+        const model = aiModels[i % aiModels.length] || aiModels[0] || 'claude-sonnet-4-6';
+        addParticipant({ name: p.name, model, system: p.system });
+      });
+    }
+    saveConfig();
+  }).catch(err => {
+    btn.disabled = false; btn.textContent = '生成設定';
+    status.textContent = '生成失敗：' + err.message;
+  });
+}
+
+function populateModeratorModels() {
+  const select = document.getElementById('mod-model');
+  select.innerHTML = '';
+  const geminiFirst = availableModels.filter(m => m.toLowerCase().startsWith('gemini'));
+  const rest = availableModels.filter(m => !m.toLowerCase().startsWith('gemini') && !m.toLowerCase().startsWith('human'));
+  [...geminiFirst, ...rest].forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m; opt.textContent = m;
+    if (m === 'gemini-3.1-pro-preview-high') opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+function toggleModerator() {
+  document.getElementById('mod-toggle').classList.toggle('on');
+  document.getElementById('mod-section').classList.toggle('open');
+  saveConfig();
+}
+function toggleVideo() { document.getElementById('video-toggle').classList.toggle('on'); saveConfig(); }
+function initParticipants() { DEFAULT_PARTICIPANTS.forEach(p => addParticipant(p)); }
+function addParticipant(preset) {
+  const idx = participantCount++;
+  const container = document.getElementById('participants');
+  const card = document.createElement('div');
+  card.className = 'participant-card'; card.id = `p-${idx}`;
+  card.innerHTML = `
+    <div class="card-header">
+      <span>參與者 ${idx + 1}</span>
+      <button class="btn-remove" onclick="removeParticipant(${idx})">x</button>
+    </div>
+    <div class="field"><label>名稱</label>
+      <input type="text" class="p-name"></div>
+    <div class="field"><label>模型</label>
+      <select class="p-model"></select></div>
+    <div class="field"><label>角色設定</label>
+      <textarea class="p-system" rows="3"></textarea></div>`;
+  card.querySelector('.p-name').value = preset ? preset.name : `AI-${idx+1}`;
+  const sel = card.querySelector('.p-model');
+  availableModels.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m; opt.textContent = m;
+    if (preset && preset.model === m) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  card.querySelector('.p-system').value = preset ? preset.system : '你是一位 AI 辯論參與者。用繁體中文，500 字內。';
+  container.appendChild(card);
+  saveConfig();
+}
+function removeParticipant(idx) { document.getElementById(`p-${idx}`)?.remove(); saveConfig(); }
+function getParticipants() {
+  return Array.from(document.querySelectorAll('.participant-card')).map(card => ({
+    name: card.querySelector('.p-name').value,
+    model: card.querySelector('.p-model').value,
+    system: card.querySelector('.p-system').value,
+  }));
+}
+
+function switchSettingsTab(e, tab) {
+  document.querySelectorAll('.settings-inner .tab').forEach(t => t.classList.remove('active'));
+  e.currentTarget.classList.add('active');
+  document.getElementById('tab-config').style.display = tab === 'config' ? '' : 'none';
+  document.getElementById('tab-logs').style.display = tab === 'logs' ? '' : 'none';
+  if (tab === 'logs') loadLogs();
+}
+
+// ── 歷史紀錄 ──
+function loadLogs() {
+  fetch('/api/logs').then(r => r.json()).then(data => {
+    const list = document.getElementById('logs-list');
+    if (!data.logs.length) {
+      list.innerHTML = '<div style="color:var(--text-dim);padding:20px;text-align:center">尚無紀錄</div>';
+      return;
+    }
+    list.innerHTML = '';
+    data.logs.forEach(log => {
+      const item = document.createElement('div');
+      item.className = 'log-item';
+      const info = document.createElement('div');
+      info.className = 'log-info';
+      info.addEventListener('click', () => viewLog(log.name));
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'log-name';
+      nameSpan.textContent = log.name.replace('debate_','').replace('.md','')
+        .replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/,'$1/$2/$3 $4:$5:$6');
+      const sizeSpan = document.createElement('span');
+      sizeSpan.className = 'log-size';
+      sizeSpan.textContent = (log.size / 1024).toFixed(1) + ' KB';
+      info.appendChild(nameSpan);
+      info.appendChild(sizeSpan);
+      const actions = document.createElement('div');
+      actions.className = 'log-actions';
+      const viewBtn = document.createElement('button');
+      viewBtn.className = 'btn btn-outline btn-sm';
+      viewBtn.textContent = '檢視';
+      viewBtn.addEventListener('click', () => viewLog(log.name));
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'btn btn-outline btn-sm';
+      dlBtn.textContent = '下載';
+      dlBtn.addEventListener('click', () => downloadLog(log.name));
+      actions.appendChild(viewBtn);
+      actions.appendChild(dlBtn);
+      item.appendChild(info);
+      item.appendChild(actions);
+      list.appendChild(item);
+    });
+  }).catch(() => {
+    document.getElementById('logs-list').innerHTML =
+      '<div style="color:var(--red);padding:20px;text-align:center">載入失敗</div>';
+  });
+}
+
+function downloadLog(filename) {
+  const a = document.createElement('a');
+  a.href = `/api/logs/${filename}`;
+  a.download = filename;
+  a.click();
+}
+function downloadCurrentLog() { if (currentLogFilename) downloadLog(currentLogFilename); }
+
+function viewLog(filename) {
+  currentLogFilename = filename;
+  document.getElementById('log-modal-title').textContent = filename.replace('.md','');
+  document.getElementById('log-modal').classList.add('active');
+  const body = document.getElementById('log-modal-body');
+  body.innerHTML = '<div style="text-align:center;color:var(--text-dim);padding:40px">載入中...</div>';
+  fetch(`/api/logs/${filename}`).then(r => r.text()).then(md => {
+    body.innerHTML = '';
+    parseLogToChat(md, body);
+  }).catch(() => {
+    body.innerHTML = '<div style="color:var(--red);padding:40px;text-align:center">載入失敗</div>';
+  });
+}
+function closeLogModal() { document.getElementById('log-modal').classList.remove('active'); }
+
+// ── Log 解析輔助函式 ──
+
+function extractSpeakerNames(md) {
+  const names = new Set();
+  const modMatch = md.match(/\*\*主持人：\*\*\s*(.+)/);
+  if (modMatch) names.add(modMatch[1].trim());
+  const partMatch = md.match(/\*\*參與者：\*\*\s*(.+)/);
+  if (partMatch) partMatch[1].split(/,\s*/).forEach(n => names.add(n.trim()));
+  return names;
+}
+
+function isSpeakerHeading(h, speakerNames) {
+  h = h.trim();
+  if (speakerNames.has(h)) return true;
+  const l = h.toLowerCase();
+  return l.includes('gpt') || l.includes('grok') || l.includes('claude') ||
+         l.includes('gemini') || l.includes('主持人');
+}
+
+function isStructuralH2(h) {
+  return /^(第\s*\d+\s*輪|開場|最終結論|最終總結)/.test(h.trim());
+}
+
+function appendSpeakerMessage(speaker, text, container) {
+  const msg = document.createElement('div');
+  msg.className = `message ${guessLogSpeakerClass(speaker)}`;
+  msg.innerHTML = `<div class="speaker">${escapeHtml(speaker)}</div><div class="content">${renderMarkdown(text)}</div>`;
+  container.appendChild(msg);
+}
+
+function appendVideoMessage(videoUrl, container) {
+  const vdiv = document.createElement('div');
+  vdiv.className = 'message video-msg';
+  vdiv.innerHTML = `<div class="speaker">場景影片</div><div class="content"><video src="${escapeHtml(videoUrl)}" controls muted loop playsinline></video></div>`;
+  container.appendChild(vdiv);
+}
+
+function flushSpeakerContent(speaker, contentLines, container) {
+  if (!speaker || !contentLines.length) return;
+  const content = contentLines.join('\n').replace(/^---\s*$/gm, '').trim();
+  if (!content) return;
+
+  const parts = content.split(/(\*\*\[場景影片\]\*\*\s+https?:\/\/[^\s]+\.mp4[^\s]*)/);
+  let textParts = [];
+  for (const part of parts) {
+    const vm = part.match(/\*\*\[場景影片\]\*\*\s+(https?:\/\/[^\s]+\.mp4[^\s]*)/);
+    if (vm) {
+      const txt = textParts.join('\n').trim();
+      if (txt) appendSpeakerMessage(speaker, txt, container);
+      textParts = [];
+      appendVideoMessage(vm[1], container);
+    } else {
+      textParts.push(part);
+    }
+  }
+  const remaining = textParts.join('\n').trim();
+  if (remaining) appendSpeakerMessage(speaker, remaining, container);
+}
+
+function parseLogToChat(md, container) {
+  const speakerNames = extractSpeakerNames(md);
+  const headerMatch = md.match(/^#\s+(.+)/m);
+  if (headerMatch) {
+    const div = document.createElement('div');
+    div.className = 'round-divider';
+    div.textContent = headerMatch[1];
+    container.appendChild(div);
+  }
+  const sections = md.split(/^(?=##\s|###\s)/gm);
+  let curSpeaker = null;
+  let curContent = [];
+
+  for (const section of sections) {
+    const trimmed = section.trim();
+    if (!trimmed) continue;
+    const h2Match = trimmed.match(/^##\s+(.+)/);
+    if (h2Match && !trimmed.startsWith('###')) {
+      if (isStructuralH2(h2Match[1])) {
+        flushSpeakerContent(curSpeaker, curContent, container);
+        curSpeaker = null; curContent = [];
+        const div = document.createElement('div');
+        div.className = 'round-divider';
+        div.textContent = h2Match[1];
+        container.appendChild(div);
+        const contentAfter = trimmed.replace(/^##\s+.+\n?/, '').trim();
+        if (contentAfter && !contentAfter.startsWith('###')) {
+          appendSpeakerMessage(h2Match[1], contentAfter, container);
+        }
+      } else if (curSpeaker) {
+        curContent.push(trimmed);
+      }
+      continue;
+    }
+    const h3Match = trimmed.match(/^###\s+(.+)/);
+    if (h3Match) {
+      if (isSpeakerHeading(h3Match[1], speakerNames)) {
+        flushSpeakerContent(curSpeaker, curContent, container);
+        curSpeaker = h3Match[1];
+        curContent = [];
+        const content = trimmed.replace(/^###\s+.+\n?/, '').trim();
+        if (content) curContent.push(content);
+      } else if (curSpeaker) {
+        curContent.push(trimmed);
+      }
+      continue;
+    }
+    if (curSpeaker) curContent.push(trimmed);
+  }
+  flushSpeakerContent(curSpeaker, curContent, container);
+}
+
+function guessLogSpeakerClass(speaker) {
+  const s = speaker.toLowerCase();
+  if (s.includes('主持') || s.includes('moderator')) return 'moderator';
+  if (s.includes('總結') || s.includes('summary')) return 'summary';
+  if (s.includes('gpt')) return 'ai-0';
+  if (s.includes('grok')) return 'ai-1';
+  if (s.includes('claude')) return 'ai-2';
+  if (s.includes('gemini')) return 'moderator';
+  return 'ai-0';
+}
+
+// ── 辯論控制 ──
+function startDebate() {
+  const participants = getParticipants();
+  if (participants.length < 2) { alert('至少需要 2 位參與者'); return; }
+  const modEnabled = document.getElementById('mod-toggle').classList.contains('on');
+  const moderatorName = document.getElementById('mod-name').value;
+  const config = {
+    topic: document.getElementById('topic').value,
+    rounds: document.getElementById('rounds').value,
+    max_tokens: document.getElementById('max_tokens').value,
+    participants,
+  };
+  config.generate_video = document.getElementById('video-toggle').classList.contains('on');
+  if (modEnabled) {
+    config.moderator = {
+      enabled: true, name: moderatorName,
+      model: document.getElementById('mod-model').value,
+      system: document.getElementById('mod-system').value,
+    };
+  }
+  fetch('/api/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(config) })
+    .then(r => r.json()).then(data => {
+      if (data.error) { alert(data.error); return; }
+      const tab = createTab(data.session_id, moderatorName);
+      buildDebatePanel(tab.id);
+      showDebateView();
+      switchToTab(tab.id);
+      connectSSE(tab);
+    });
+}
+
+function stopDebate(tabId) {
+  const tab = getTab(tabId);
+  if (!tab || !tab.sessionId) return;
+  fetch('/api/stop', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ session_id: tab.sessionId })
+  }).then(r => r.json()).then(() => {
+    const el = panelEl(tabId, '.status-text');
+    if (el) el.textContent = '停止中...';
+  });
+}
+
+function setTabRunning(tabId, running) {
+  const tab = getTab(tabId);
+  if (tab) tab.running = running;
+  const stopBtn = panelEl(tabId, '.btn-stop');
+  const backBtn = panelEl(tabId, '.btn-back');
+  const dot = panelEl(tabId, '.status-dot');
+  const statusText = panelEl(tabId, '.status-text');
+  if (stopBtn) stopBtn.style.display = running ? '' : 'none';
+  if (backBtn) backBtn.style.display = running ? 'none' : '';
+  if (dot) dot.classList.toggle('active', running);
+  if (statusText) statusText.textContent = running ? '辯論中' : '已結束';
+  renderTabBar();
+}
+
+// ── 人類輸入 ──
+function showHumanInput(tabId, speaker) {
+  const bar = panelEl(tabId, '.human-input-bar');
+  if (!bar) return;
+  const label = panelEl(tabId, '.input-label');
+  if (label) label.textContent = `輪到 ${speaker} 發言`;
+  bar.classList.add('active');
+  const input = panelEl(tabId, '.human-input-text');
+  if (input) { input.value = ''; input.focus(); }
+  const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
+  if (panel) panel.querySelectorAll('.message.thinking').forEach(el => el.remove());
+  startCountdown(tabId);
+}
+function hideHumanInput(tabId) {
+  const bar = panelEl(tabId, '.human-input-bar');
+  if (bar) bar.classList.remove('active');
+  stopCountdown(tabId);
+  if (countdownModalTabId === tabId) {
+    document.getElementById('countdown-modal').classList.remove('active');
+    countdownModalTabId = null;
+  }
+}
+function submitHumanInput(tabId) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  const input = panelEl(tabId, '.human-input-text');
+  const text = input ? input.value.trim() : '';
+  if (!text) return;
+  fetch('/api/human_input', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ text, session_id: tab.sessionId })
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    hideHumanInput(tabId);
+  });
+}
+function skipHumanTurn(tabId) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  fetch('/api/human_input', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ text: '（跳過此輪）', session_id: tab.sessionId })
+  }).then(() => hideHumanInput(tabId));
+}
+function handleHumanKeydown(e, tabId) {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitHumanInput(tabId); }
+}
+
+// ── 頁面切換 ──
+function showDebateView() {
+  document.getElementById('settings-page').style.display = 'none';
+  document.getElementById('settings-page').classList.remove('overlay');
+  document.getElementById('settings-overlay-bg').classList.remove('active');
+  document.getElementById('debate-container').style.display = 'flex';
+}
+function backToSettings() {
+  // 全頁設定模式
+  document.getElementById('debate-container').style.display = 'none';
+  document.getElementById('settings-page').style.display = '';
+  document.getElementById('settings-page').classList.remove('overlay');
+  document.getElementById('settings-overlay-bg').classList.remove('active');
+  const backBtn = document.getElementById('btn-back-to-debates');
+  if (backBtn) backBtn.style.display = tabs.length > 0 ? '' : 'none';
+}
+function backToDebates() {
+  // 從全頁設定回到辯論視圖
+  document.getElementById('settings-page').style.display = 'none';
+  document.getElementById('debate-container').style.display = 'flex';
+}
+function openSettings() {
+  document.getElementById('settings-page').style.display = '';
+  document.getElementById('settings-page').classList.add('overlay');
+  document.getElementById('settings-overlay-bg').classList.add('active');
+}
+function closeSettings() {
+  document.getElementById('settings-page').classList.remove('overlay');
+  document.getElementById('settings-overlay-bg').classList.remove('active');
+  // 如果辯論容器可見，隱藏設定頁
+  if (document.getElementById('debate-container').style.display !== 'none') {
+    document.getElementById('settings-page').style.display = 'none';
+  }
+}
+
+// ── 倒數計時 ──
+function startCountdown(tabId) {
+  stopCountdown(tabId);
+  const tab = getTab(tabId);
+  if (!tab) return;
+  const limit = parseInt(document.getElementById('human_time_limit').value) || 120;
+  tab.countdownSeconds = limit;
+  tab.countdownWarningShown = false;
+  tab.countdownSkipped = false;
+  updateCountdownDisplay(tabId);
+  tab.countdownTimer = setInterval(() => {
+    tab.countdownSeconds--;
+    if (tab.countdownSeconds < 0) tab.countdownSeconds = 0;
+    updateCountdownDisplay(tabId);
+    if (tab.countdownSeconds <= 30 && !tab.countdownWarningShown) {
+      tab.countdownWarningShown = true;
+      countdownModalTabId = tabId;
+      document.getElementById('countdown-modal').classList.add('active');
+    }
+    if (tab.countdownSeconds <= 0 && !tab.countdownSkipped) {
+      tab.countdownSkipped = true;
+      stopCountdown(tabId);
+      document.getElementById('countdown-modal').classList.remove('active');
+      countdownModalTabId = null;
+      skipHumanTurn(tabId);
+    }
+  }, 1000);
+}
+function stopCountdown(tabId) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  if (tab.countdownTimer) { clearInterval(tab.countdownTimer); tab.countdownTimer = null; }
+  const display = panelEl(tabId, '.countdown-display');
+  if (display) { display.textContent = ''; display.className = 'countdown-display'; }
+}
+function updateCountdownDisplay(tabId) {
+  const tab = getTab(tabId);
+  if (!tab) return;
+  const display = panelEl(tabId, '.countdown-display');
+  if (!display) return;
+  const min = Math.floor(tab.countdownSeconds / 60);
+  const sec = tab.countdownSeconds % 60;
+  display.textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+  display.className = 'countdown-display';
+  if (tab.countdownSeconds <= 10) display.classList.add('critical');
+  else if (tab.countdownSeconds <= 30) display.classList.add('warning');
+}
+function continueInput() {
+  document.getElementById('countdown-modal').classList.remove('active');
+  if (countdownModalTabId) {
+    const input = panelEl(countdownModalTabId, '.human-input-text');
+    if (input) input.focus();
+  }
+}
+function skipFromModal() {
+  document.getElementById('countdown-modal').classList.remove('active');
+  if (countdownModalTabId) {
+    stopCountdown(countdownModalTabId);
+    skipHumanTurn(countdownModalTabId);
+    countdownModalTabId = null;
+  }
+}
+
+// ── 訊息樣式 ──
+function getSpeakerClass(tabId, speaker) {
+  const tab = getTab(tabId);
+  const modName = tab ? tab.moderatorName : '';
+  if (modName && speaker.includes(modName) || speaker.includes('主持人') || speaker.includes('主持')) return 'moderator';
+  if (speaker.includes('總結')) return 'summary';
+  const all = tab ? tab.participants : [];
+  for (let i = 0; i < all.length; i++) {
+    if (all[i].model.toLowerCase().startsWith('human') && (speaker.includes(all[i].name) || all[i].name.includes(speaker.split('（')[0]))) return 'human';
+  }
+  const names = all.map(p => p.name);
+  for (let i = 0; i < names.length; i++) {
+    if (speaker.includes(names[i]) || names[i].includes(speaker.split('（')[0])) return `ai-${i % 4}`;
+  }
+  if (speaker.includes('GPT')) return 'ai-0';
+  if (speaker.includes('Grok') || speaker.includes('grok')) return 'ai-1';
+  if (speaker.includes('Claude') || speaker.includes('claude')) return 'ai-2';
+  return 'ai-0';
+}
+
+function appendMessage(tabId, speaker, content, cssClass) {
+  const container = panelEl(tabId, '.chat-messages');
+  if (!container) return;
+  const div = document.createElement('div');
+  div.className = `message ${cssClass}`;
+  div.innerHTML = `<div class="speaker">${escapeHtml(speaker)}</div><div class="content">${renderMarkdown(content)}</div>`;
+  container.appendChild(div);
+  smartScroll(tabId, container);
+}
+
+// ── SSE ──
+function safeParse(raw) {
+  try { return JSON.parse(raw); }
+  catch { return null; }
+}
+function connectSSE(tab) {
+  if (tab.eventSource) tab.eventSource.close();
+  const tabId = tab.id;
+  tab.eventSource = new EventSource(`/api/events?session_id=${tab.sessionId}`);
+
+  tab.eventSource.addEventListener('message', e => {
+    const data = safeParse(e.data); if (!data) return;
+    const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
+    if (panel) panel.querySelectorAll('.message.thinking').forEach(el => el.remove());
+    appendMessage(tabId, data.speaker, data.content, getSpeakerClass(tabId, data.speaker));
+  });
+
+  tab.eventSource.addEventListener('speaking', e => {
+    const data = safeParse(e.data); if (!data) return;
+    const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
+    if (panel) panel.querySelectorAll('.message.thinking').forEach(el => el.remove());
+    const container = panelEl(tabId, '.chat-messages');
+    if (!container) return;
+    const div = document.createElement('div');
+    div.className = 'message thinking';
+    const m = {'final_summary':'產出最終結論...','summarizing':'產出階段總結...','moderating':'主持中...','generating_video':'生成場景影片...'};
+    div.textContent = `${data.speaker} ${m[data.status]||'思考中...'}`;
+    container.appendChild(div);
+    smartScroll(tabId, container);
+  });
+
+  tab.eventSource.addEventListener('round', e => {
+    const data = safeParse(e.data); if (!data) return;
+    const roundLabel = data.label || `第 ${data.round} 輪`;
+    const roundInfo = panelEl(tabId, '.round-info');
+    if (roundInfo) roundInfo.textContent = data.label || `第 ${data.round}/${data.total} 輪`;
+    const container = panelEl(tabId, '.chat-messages');
+    if (!container) return;
+    const div = document.createElement('div');
+    div.className = 'round-divider'; div.textContent = roundLabel;
+    container.appendChild(div); smartScroll(tabId, container);
+  });
+
+  tab.eventSource.addEventListener('video', e => {
+    const data = safeParse(e.data); if (!data) return;
+    const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
+    if (panel) panel.querySelectorAll('.message.thinking').forEach(el => el.remove());
+    const container = panelEl(tabId, '.chat-messages');
+    if (!container) return;
+    const div = document.createElement('div');
+    div.className = 'message video-msg';
+    const url = escapeHtml(data.url);
+    const videoLabel = data.speaker ? `${data.speaker} - 第 ${data.round} 輪` : `第 ${data.round} 輪場景`;
+    div.innerHTML = `<div class="speaker">${escapeHtml(videoLabel)}</div><div class="content"><video src="${url}" controls autoplay muted loop playsinline></video></div>`;
+    container.appendChild(div);
+    smartScroll(tabId, container);
+  });
+
+  tab.eventSource.addEventListener('video_merged', e => {
+    const data = safeParse(e.data); if (!data) return;
+    const container = panelEl(tabId, '.chat-messages');
+    if (!container) return;
+    const div = document.createElement('div');
+    div.className = 'message video-msg';
+    div.style.maxWidth = '95%';
+    div.innerHTML = `<div class="speaker">完整辯論影片（${escapeHtml(String(data.count))} 段合併）</div>`
+      + `<div class="content" style="display:flex;flex-direction:column;gap:10px">`
+      + `<video src="/api/video/${escapeHtml(data.filename)}" controls playsinline style="max-width:100%;border-radius:8px"></video>`
+      + `<a href="/api/video/${escapeHtml(data.filename)}" download class="btn btn-outline btn-sm" style="align-self:flex-start;text-decoration:none;color:var(--blue)">下載完整影片</a>`
+      + `</div>`;
+    container.appendChild(div);
+    smartScroll(tabId, container);
+  });
+
+  tab.eventSource.addEventListener('waiting_human', e => {
+    const data = safeParse(e.data); if (!data) return;
+    showHumanInput(tabId, data.speaker);
+  });
+
+  tab.eventSource.addEventListener('status', e => {
+    const data = safeParse(e.data); if (!data) return;
+    const el = panelEl(tabId, '.status-text');
+    if (el) el.textContent = data.message;
+  });
+
+  tab.eventSource.addEventListener('done', () => {
+    setTabRunning(tabId, false);
+    hideHumanInput(tabId);
+    const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
+    if (panel) panel.querySelectorAll('.message.thinking').forEach(el => el.remove());
+    const roundInfo = panelEl(tabId, '.round-info');
+    if (roundInfo) roundInfo.textContent = '已完成';
+    if (tab.eventSource) { tab.eventSource.close(); tab.eventSource = null; }
+  });
+
+  tab.eventSource.onerror = () => {
+    setTimeout(() => {
+      if (tab.eventSource) { tab.eventSource.close(); tab.eventSource = null; }
+      fetch(`/api/state?session_id=${tab.sessionId}`)
+        .then(r => r.json())
+        .then(d => { if (d.running) connectSSE(tab); else setTabRunning(tabId, false); });
+    }, 3000);
+  };
+}
+</script>
+</body>
+</html>

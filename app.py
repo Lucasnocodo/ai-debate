@@ -752,7 +752,7 @@ def start_debate():
 
     data = request.get_json(silent=True) or {}
     try:
-        rounds = max(1, min(int(data.get("rounds", 10)), 200))
+        rounds = max(1, min(int(data.get("rounds", 6)), 6))
         max_tokens = max(100, min(int(data.get("max_tokens", 1000)), 4000))
     except (ValueError, TypeError):
         return jsonify({"error": "輪數或 Token 上限格式不正確"}), 400

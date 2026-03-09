@@ -499,6 +499,68 @@
   .round-divider::before { left: 5%; width: 28%; }
   .round-divider::after { right: 5%; width: 28%; }
 
+  /* ── 啟動等待動畫 ── */
+  .init-loader {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 28px; padding: 60px 20px; animation: fadeIn 0.5s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .init-loader .loader-ring {
+    width: 64px; height: 64px; border-radius: 50%; position: relative;
+  }
+  .init-loader .loader-ring::before, .init-loader .loader-ring::after {
+    content: ''; position: absolute; inset: 0; border-radius: 50%;
+    border: 2px solid transparent;
+  }
+  .init-loader .loader-ring::before {
+    border-top-color: var(--cyan); border-right-color: var(--cyan);
+    animation: loaderSpin 1.2s linear infinite;
+    filter: drop-shadow(0 0 6px var(--cyan));
+  }
+  .init-loader .loader-ring::after {
+    border-bottom-color: var(--accent); border-left-color: var(--accent);
+    animation: loaderSpin 1.8s linear infinite reverse;
+    filter: drop-shadow(0 0 6px var(--accent));
+    inset: 6px;
+  }
+  @keyframes loaderSpin { to { transform: rotate(360deg); } }
+  .init-loader .loader-text {
+    font-size: 14px; color: var(--text-dim); letter-spacing: 0.5px;
+    text-align: center; line-height: 1.6;
+  }
+  .init-loader .loader-stage {
+    font-size: 13px; color: var(--cyan); font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .init-loader .loader-steps {
+    display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 320px;
+  }
+  .init-loader .step {
+    display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-muted);
+    transition: all 0.4s;
+  }
+  .init-loader .step.active { color: var(--cyan); }
+  .init-loader .step.done { color: var(--green); }
+  .init-loader .step-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--border);
+    flex-shrink: 0; transition: all 0.4s;
+  }
+  .init-loader .step.active .step-dot {
+    background: var(--cyan); box-shadow: 0 0 8px rgba(0,229,255,0.5);
+    animation: pulse 1.2s infinite;
+  }
+  .init-loader .step.done .step-dot { background: var(--green); box-shadow: 0 0 6px rgba(0,240,160,0.4); }
+  .init-loader .loader-bar {
+    width: 100%; max-width: 320px; height: 3px; background: var(--border); border-radius: 2px;
+    overflow: hidden;
+  }
+  .init-loader .loader-bar-fill {
+    height: 100%; width: 0%; border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--cyan));
+    box-shadow: 0 0 10px rgba(0,229,255,0.4);
+    transition: width 0.6s ease;
+  }
+
   /* ── 人類輸入列 ── */
   .human-input-bar {
     display: none; padding: 16px 24px;
@@ -704,19 +766,27 @@
     <div id="tab-config">
       <div class="gen-box">
         <h2>快速生成辯論設定</h2>
-        <div class="gen-tags">
-          <button class="gen-tag" onclick="selectCategory(this,'政治')">政治</button>
-          <button class="gen-tag" onclick="selectCategory(this,'財經')">財經</button>
-          <button class="gen-tag" onclick="selectCategory(this,'科技')">科技</button>
-          <button class="gen-tag" onclick="selectCategory(this,'遊戲')">遊戲</button>
-          <button class="gen-tag" onclick="selectCategory(this,'哲學')">哲學</button>
-          <button class="gen-tag" onclick="selectCategory(this,'教育')">教育</button>
-          <button class="gen-tag" onclick="selectCategory(this,'生活')">生活</button>
-          <button class="gen-tag" onclick="selectCategory(this,'AI')">AI</button>
+        <div class="tabs" style="margin-bottom:10px">
+          <button class="tab active" id="input-tab-category" onclick="setInputMode('category')">主題分類</button>
+          <button class="tab" id="input-tab-outline" onclick="setInputMode('outline')">自訂大綱</button>
         </div>
-        <div class="field">
-          <label>大綱（選填，可補充具體方向）</label>
-          <textarea id="gen-outline" rows="2" placeholder="例如：台灣的兩岸政策走向、電動車產業前景..."></textarea>
+        <div id="input-category-mode">
+          <div class="gen-tags">
+            <button class="gen-tag" onclick="selectCategory(this,'政治')">政治</button>
+            <button class="gen-tag" onclick="selectCategory(this,'財經')">財經</button>
+            <button class="gen-tag" onclick="selectCategory(this,'科技')">科技</button>
+            <button class="gen-tag" onclick="selectCategory(this,'遊戲')">遊戲</button>
+            <button class="gen-tag" onclick="selectCategory(this,'哲學')">哲學</button>
+            <button class="gen-tag" onclick="selectCategory(this,'教育')">教育</button>
+            <button class="gen-tag" onclick="selectCategory(this,'生活')">生活</button>
+            <button class="gen-tag" onclick="selectCategory(this,'AI')">AI</button>
+          </div>
+        </div>
+        <div id="input-outline-mode" style="display:none">
+          <div class="field">
+            <label>大綱（描述你想辯論的方向）</label>
+            <textarea id="gen-outline" rows="3" placeholder="例如：台灣的兩岸政策走向、電動車產業前景、AI 是否會取代人類工作..."></textarea>
+          </div>
         </div>
         <div class="gen-row">
           <div class="field">
@@ -729,23 +799,14 @@
         </div>
         <div id="gen-status" style="font-size:12px;color:var(--text-dim);display:none"></div>
       </div>
-      <div class="field">
-        <label>辯論主題</label>
-        <textarea id="topic" rows="8">目前最有效的賺錢方式。涵蓋範圍包括但不限於：
-- 預測市場套利（如 Polymarket）
-- AI 應用變現（SaaS、自動化代理）
-- 加密貨幣與 DeFi 策略
-- 傳統投資（股票、房地產、債券）
-- 自媒體與個人品牌
-- 自動化被動收入
-
-請提出具體、可執行的方案，附上預估報酬率與風險評估。
-互相挑戰對方論點，不要和稀泥。</textarea>
+      <div class="field" id="topic-field" style="display:none">
+        <label>辯論主題（由 AI 生成，可編輯微調）</label>
+        <textarea id="topic" rows="8" placeholder="點擊上方「一鍵生成設定」後自動填入"></textarea>
       </div>
       <div class="row">
         <div class="field">
           <label>輪數</label>
-          <input type="number" id="rounds" value="30" min="1" max="200">
+          <input type="number" id="rounds" value="6" min="1" max="6">
         </div>
         <div class="field">
           <label>每次回覆 Token 上限</label>
@@ -765,9 +826,9 @@
           <div class="card-header"><span>主持人設定</span></div>
           <div class="field">
             <label>名稱</label>
-            <input type="text" id="mod-name" value="Gemini（主持人）">
+            <input type="text" id="mod-name" value="主持人">
           </div>
-          <div class="field">
+          <div class="field" style="display:none">
             <label>模型</label>
             <select id="mod-model"></select>
           </div>
@@ -781,11 +842,13 @@
         <button class="toggle" id="video-toggle" onclick="toggleVideo()"></button>
         <span style="font-size:14px;font-weight:600;color:var(--text);letter-spacing:0.2px">每輪生成場景影片</span>
       </div>
-      <div class="section-divider"><h2>參與者</h2></div>
-      <div id="participants" style="display:flex;flex-direction:column;gap:14px"></div>
-      <button class="btn btn-outline" onclick="addParticipant()" style="width:100%;border-style:dashed;padding:14px 20px">+ 新增參與者</button>
-      <div class="btn-start-group" style="margin-top:8px">
-        <button class="btn btn-primary" id="btn-start" onclick="startDebate()" style="width:100%;padding:16px 20px;font-size:16px;letter-spacing:0.5px">開始辯論</button>
+      <div id="participants-section" style="display:none">
+        <div class="section-divider"><h2>參與者</h2></div>
+        <div id="participants" style="display:flex;flex-direction:column;gap:14px"></div>
+        <button class="btn btn-outline" onclick="addParticipant()" style="width:100%;border-style:dashed;padding:14px 20px">+ 新增參與者</button>
+        <div class="btn-start-group" style="margin-top:8px">
+          <button class="btn btn-primary" id="btn-start" onclick="startDebate()" style="width:100%;padding:16px 20px;font-size:16px;letter-spacing:0.5px">開始辯論</button>
+        </div>
       </div>
     </div>
     <div id="tab-logs" style="display:none">
@@ -858,13 +921,15 @@ function escapeHtml(text) {
 }
 
 // ── 預設 ──
+const FIXED_MODEL = 'claude-sonnet-4-6';
+const FIXED_MOD_MODEL = 'claude-haiku';
 const DEFAULT_PARTICIPANTS = [
-  { name: 'GPT-5.4（策略分析師）', model: 'gpt-5.4',
-    system: '你是 GPT-5.4，一位數據驅動的策略分析師。你偏好有數據支撐、可量化的賺錢策略。對於過度樂觀的預期要用數據反駁。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' },
-  { name: 'Grok-4.1（激進創新派）', model: 'grok-4.1-expert',
-    system: '你是 Grok-4.1，一位激進的科技與創新趨勢專家。你偏好高報酬、前沿技術的賺錢方式，願意承擔較高風險。善於發現被低估的機會，挑戰保守觀點。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' },
-  { name: 'Claude（務實風險管理者）', model: 'claude-opus-4-6',
-    system: '你是 Claude，一位務實的風險管理者與長期投資思考者。你重視風險調整後報酬、可持續性、以及實際可執行性。會指出其他 AI 忽略的風險和盲點。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' }
+  { name: 'AI-1（策略分析師）', model: FIXED_MODEL,
+    system: '你是一位數據驅動的策略分析師。你偏好有數據支撐、可量化的賺錢策略。對於過度樂觀的預期要用數據反駁。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' },
+  { name: 'AI-2（激進創新派）', model: FIXED_MODEL,
+    system: '你是一位激進的科技與創新趨勢專家。你偏好高報酬、前沿技術的賺錢方式，願意承擔較高風險。善於發現被低估的機會，挑戰保守觀點。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' },
+  { name: 'AI-3（務實風險管理者）', model: FIXED_MODEL,
+    system: '你是一位務實的風險管理者與長期投資思考者。你重視風險調整後報酬、可持續性、以及實際可執行性。會指出其他 AI 忽略的風險和盲點。每次回覆控制在 500 字內，用繁體中文。直接回應其他 AI 的論點，可以同意、反駁或延伸。' }
 ];
 
 let availableModels = ['gpt-5.4', 'grok-4.1-expert'];
@@ -947,7 +1012,20 @@ function buildDebatePanel(tabId) {
           <button class="btn btn-outline btn-sm btn-back" style="display:none" onclick="newDebateFromTab()">返回設定</button>
         </div>
       </div>
-      <div class="chat-messages"></div>
+      <div class="chat-messages">
+        <div class="init-loader" id="init-loader-${tabId}">
+          <div class="loader-ring"></div>
+          <div class="loader-stage" id="init-stage-${tabId}">initializing</div>
+          <div class="loader-steps">
+            <div class="step active" data-step="connect"><span class="step-dot"></span>連接辯論伺服器</div>
+            <div class="step" data-step="prepare"><span class="step-dot"></span>準備參與者角色</div>
+            <div class="step" data-step="moderator"><span class="step-dot"></span>主持人構思開場白</div>
+            <div class="step" data-step="start"><span class="step-dot"></span>辯論即將開始</div>
+          </div>
+          <div class="loader-bar"><div class="loader-bar-fill" id="init-bar-${tabId}"></div></div>
+          <div class="loader-text">AI 正在分析辯論主題並準備論點，請稍候...</div>
+        </div>
+      </div>
       <button class="scroll-bottom-btn" onclick="scrollToBottom('${tabId}')">新訊息</button>
       <div class="human-input-bar">
         <div class="input-wrap">
@@ -1056,6 +1134,7 @@ function newDebateFromTab() {
 // ── 設定持久化（localStorage）──
 function saveConfig() {
   const config = {
+    inputMode: currentInputMode,
     topic: document.getElementById('topic').value,
     rounds: document.getElementById('rounds').value,
     max_tokens: document.getElementById('max_tokens').value,
@@ -1077,7 +1156,7 @@ function loadConfig() {
 function restoreConfig(saved) {
   if (!saved) return;
   document.getElementById('topic').value = saved.topic || '';
-  document.getElementById('rounds').value = saved.rounds || 30;
+  document.getElementById('rounds').value = Math.min(saved.rounds || 6, 6);
   document.getElementById('max_tokens').value = saved.max_tokens || 1000;
   if (saved.modEnabled !== undefined) {
     const tog = document.getElementById('mod-toggle');
@@ -1085,7 +1164,7 @@ function restoreConfig(saved) {
     if (saved.modEnabled) { tog.classList.add('on'); sec.classList.add('open'); }
     else { tog.classList.remove('on'); sec.classList.remove('open'); }
   }
-  document.getElementById('mod-name').value = saved.modName || 'Gemini（主持人）';
+  document.getElementById('mod-name').value = saved.modName || '主持人';
   if (saved.modModel) document.getElementById('mod-model').value = saved.modModel;
   document.getElementById('mod-system').value = saved.modSystem || '';
   document.getElementById('human_time_limit').value = saved.humanTimeLimit || 120;
@@ -1095,6 +1174,13 @@ function restoreConfig(saved) {
     document.getElementById('participants').innerHTML = '';
     participantCount = 0;
     saved.participants.forEach(p => addParticipant(p));
+  }
+  // 還原輸入模式（分類 vs 大綱）
+  if (saved.inputMode === 'outline') setInputMode('outline');
+  // 若已有主題內容（之前生成過），顯示主題與參與者
+  if (saved.topic && saved.topic.trim()) {
+    document.getElementById('topic-field').style.display = '';
+    showParticipantsSection();
   }
 }
 function initAutoSave() {
@@ -1126,6 +1212,22 @@ fetch('/api/models').then(r => r.json()).then(data => {
 
 // ── 快速生成 ──
 let selectedCategory = '';
+let currentInputMode = 'category';
+function setInputMode(mode) {
+  currentInputMode = mode;
+  document.getElementById('input-tab-category').classList.toggle('active', mode === 'category');
+  document.getElementById('input-tab-outline').classList.toggle('active', mode === 'outline');
+  document.getElementById('input-category-mode').style.display = mode === 'category' ? '' : 'none';
+  document.getElementById('input-outline-mode').style.display = mode === 'outline' ? '' : 'none';
+  // 切換時清除另一邊的選擇
+  if (mode === 'category') {
+    document.getElementById('gen-outline').value = '';
+  } else {
+    document.querySelectorAll('.gen-tag').forEach(t => t.classList.remove('active'));
+    selectedCategory = '';
+  }
+  saveConfig();
+}
 function selectCategory(el, cat) {
   document.querySelectorAll('.gen-tag').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
@@ -1135,14 +1237,15 @@ function generateConfig() {
   const category = selectedCategory;
   const outline = document.getElementById('gen-outline').value.trim();
   const count = document.getElementById('gen-count').value;
-  if (!category && !outline) { alert('請選擇一個分類或輸入大綱'); return; }
+  if (currentInputMode === 'category' && !category) { alert('請選擇一個主題分類'); return; }
+  if (currentInputMode === 'outline' && !outline) { alert('請輸入大綱內容'); return; }
 
   const btn = document.getElementById('btn-generate');
   const status = document.getElementById('gen-status');
   btn.disabled = true; btn.textContent = '生成中...';
   status.style.display = 'block'; status.textContent = '正在用 AI 生成辯論設定，請稍候...';
 
-  const modModel = document.getElementById('mod-model').value || 'claude-sonnet-4-6';
+  const modModel = FIXED_MOD_MODEL;
   fetch('/api/generate_config', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ category, outline, count, model: modModel })
@@ -1150,16 +1253,18 @@ function generateConfig() {
     btn.disabled = false; btn.textContent = '一鍵生成設定';
     if (data.error) { status.textContent = '生成失敗：' + data.error; return; }
     status.style.display = 'none';
-    if (data.topic) document.getElementById('topic').value = data.topic;
+    if (data.topic) {
+      document.getElementById('topic').value = data.topic;
+      document.getElementById('topic-field').style.display = '';
+    }
     if (data.participants && data.participants.length) {
       document.getElementById('participants').innerHTML = '';
       participantCount = 0;
-      const aiModels = availableModels.filter(m => !m.toLowerCase().startsWith('human'));
       data.participants.forEach((p, i) => {
-        const model = aiModels[i % aiModels.length] || aiModels[0] || 'claude-sonnet-4-6';
-        addParticipant({ name: p.name, model, system: p.system });
+        addParticipant({ name: p.name, model: FIXED_MODEL, system: p.system });
       });
     }
+    showParticipantsSection();
     saveConfig();
   }).catch(err => {
     btn.disabled = false; btn.textContent = '一鍵生成設定';
@@ -1170,14 +1275,9 @@ function generateConfig() {
 function populateModeratorModels() {
   const select = document.getElementById('mod-model');
   select.innerHTML = '';
-  const geminiFirst = availableModels.filter(m => m.toLowerCase().startsWith('gemini'));
-  const rest = availableModels.filter(m => !m.toLowerCase().startsWith('gemini') && !m.toLowerCase().startsWith('human'));
-  [...geminiFirst, ...rest].forEach(m => {
-    const opt = document.createElement('option');
-    opt.value = m; opt.textContent = m;
-    if (m === 'gemini-3.1-pro-preview-high') opt.selected = true;
-    select.appendChild(opt);
-  });
+  const opt = document.createElement('option');
+  opt.value = FIXED_MOD_MODEL; opt.textContent = FIXED_MOD_MODEL; opt.selected = true;
+  select.appendChild(opt);
 }
 function toggleModerator() {
   document.getElementById('mod-toggle').classList.toggle('on');
@@ -1186,6 +1286,10 @@ function toggleModerator() {
 }
 function toggleVideo() { document.getElementById('video-toggle').classList.toggle('on'); saveConfig(); }
 function initParticipants() { DEFAULT_PARTICIPANTS.forEach(p => addParticipant(p)); }
+function showParticipantsSection() {
+  const sec = document.getElementById('participants-section');
+  if (sec) sec.style.display = '';
+}
 function addParticipant(preset) {
   const idx = participantCount++;
   const container = document.getElementById('participants');
@@ -1198,18 +1302,15 @@ function addParticipant(preset) {
     </div>
     <div class="field"><label>名稱</label>
       <input type="text" class="p-name"></div>
-    <div class="field"><label>模型</label>
+    <div class="field" style="display:none"><label>模型</label>
       <select class="p-model"></select></div>
     <div class="field"><label>角色設定</label>
       <textarea class="p-system" rows="5"></textarea></div>`;
   card.querySelector('.p-name').value = preset ? preset.name : `AI-${idx+1}`;
   const sel = card.querySelector('.p-model');
-  availableModels.forEach(m => {
-    const opt = document.createElement('option');
-    opt.value = m; opt.textContent = m;
-    if (preset && preset.model === m) opt.selected = true;
-    sel.appendChild(opt);
-  });
+  const opt = document.createElement('option');
+  opt.value = FIXED_MODEL; opt.textContent = FIXED_MODEL; opt.selected = true;
+  sel.appendChild(opt);
   card.querySelector('.p-system').value = preset ? preset.system : '你是一位 AI 辯論參與者。用繁體中文，500 字內。';
   container.appendChild(card);
   saveConfig();
@@ -1424,6 +1525,7 @@ function guessLogSpeakerClass(speaker) {
 
 // ── 辯論控制 ──
 function startDebate() {
+  if (!document.getElementById('topic').value.trim()) { alert('請先設定辯論主題'); return; }
   const participants = getParticipants();
   if (participants.length < 2) { alert('至少需要 2 位參與者'); return; }
   const modEnabled = document.getElementById('mod-toggle').classList.contains('on');
@@ -1450,7 +1552,50 @@ function startDebate() {
       showDebateView();
       switchToTab(tab.id);
       connectSSE(tab);
+      startInitLoader(tab.id);
     });
+}
+
+function startInitLoader(tabId) {
+  const steps = ['connect', 'prepare', 'moderator', 'start'];
+  const labels = ['CONNECTING', 'PREPARING', 'COMPOSING', 'LAUNCHING'];
+  const delays = [2000, 6000, 14000, 25000]; // 各步驟切換的時間點
+  const tab = getTab(tabId);
+  if (!tab) return;
+  tab._initTimers = [];
+
+  steps.forEach((step, i) => {
+    const t = setTimeout(() => {
+      const loader = document.getElementById(`init-loader-${tabId}`);
+      if (!loader) return;
+      const bar = document.getElementById(`init-bar-${tabId}`);
+      const stage = document.getElementById(`init-stage-${tabId}`);
+      // 標記之前步驟為 done
+      loader.querySelectorAll('.step').forEach(el => {
+        const s = el.dataset.step;
+        const idx = steps.indexOf(s);
+        if (idx < i) { el.classList.remove('active'); el.classList.add('done'); }
+        else if (idx === i) { el.classList.add('active'); el.classList.remove('done'); }
+        else { el.classList.remove('active', 'done'); }
+      });
+      if (stage) stage.textContent = labels[i];
+      if (bar) bar.style.width = `${((i + 1) / steps.length) * 90}%`;
+    }, delays[i]);
+    tab._initTimers.push(t);
+  });
+}
+
+function removeInitLoader(tabId) {
+  const loader = document.getElementById(`init-loader-${tabId}`);
+  if (!loader) return;
+  const tab = getTab(tabId);
+  if (tab && tab._initTimers) {
+    tab._initTimers.forEach(t => clearTimeout(t));
+    tab._initTimers = null;
+  }
+  loader.style.transition = 'opacity 0.4s';
+  loader.style.opacity = '0';
+  setTimeout(() => loader.remove(), 400);
 }
 
 function stopDebate(tabId) {
@@ -1667,6 +1812,7 @@ function connectSSE(tab) {
 
   tab.eventSource.addEventListener('message', e => {
     const data = safeParse(e.data); if (!data) return;
+    removeInitLoader(tabId);
     const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
     if (panel) panel.querySelectorAll('.message.thinking').forEach(el => el.remove());
     appendMessage(tabId, data.speaker, data.content, getSpeakerClass(tabId, data.speaker));
@@ -1674,6 +1820,7 @@ function connectSSE(tab) {
 
   tab.eventSource.addEventListener('speaking', e => {
     const data = safeParse(e.data); if (!data) return;
+    removeInitLoader(tabId);
     const panel = document.querySelector(`.debate-panel[data-tab-id="${tabId}"]`);
     if (panel) panel.querySelectorAll('.message.thinking').forEach(el => el.remove());
     const container = panelEl(tabId, '.chat-messages');
@@ -1688,6 +1835,7 @@ function connectSSE(tab) {
 
   tab.eventSource.addEventListener('round', e => {
     const data = safeParse(e.data); if (!data) return;
+    removeInitLoader(tabId);
     const roundLabel = data.label || `第 ${data.round} 輪`;
     const roundInfo = panelEl(tabId, '.round-info');
     if (roundInfo) roundInfo.textContent = data.label || `第 ${data.round}/${data.total} 輪`;
@@ -1736,6 +1884,7 @@ function connectSSE(tab) {
 
   tab.eventSource.addEventListener('status', e => {
     const data = safeParse(e.data); if (!data) return;
+    removeInitLoader(tabId);
     const el = panelEl(tabId, '.status-text');
     if (el) el.textContent = data.message;
   });

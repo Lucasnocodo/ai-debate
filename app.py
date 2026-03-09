@@ -8,7 +8,6 @@ import re
 import subprocess
 import threading
 import time
-import urllib.request
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -33,19 +32,6 @@ if PROXY_BASE.endswith("/v1"):
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL, default_headers={"User-Agent": "ai-debate/1.0"})
 
-_anthropic_client = None
-
-
-def get_anthropic_client():
-    global _anthropic_client
-    if _anthropic_client is None:
-        import anthropic
-        _anthropic_client = anthropic.Anthropic(
-            api_key=API_KEY,
-            base_url=PROXY_BASE,
-            default_headers={"User-Agent": "ai-debate/1.0"},
-        )
-    return _anthropic_client
 
 
 # ── Session 管理 ──────────────────────────────────────
@@ -175,6 +161,7 @@ def call_gemini(session_id: str, model: str, system: str, prompt: str, max_token
             json=payload,
             timeout=180,
         )
+        resp.raise_for_status()
         data = resp.json()
         if "error" in data:
             err_msg = str(data["error"].get("message", data["error"]))
@@ -203,7 +190,8 @@ def call_claude_api(session_id: str, model: str, system: str, prompt: str, max_t
             max_tokens=max_tokens,
             temperature=0.8,
         )
-        return resp.choices[0].message.content.strip()
+        content = resp.choices[0].message.content or ""
+        return re.sub(r"<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
 
     return _with_retry(session_id, model, _call, "Claude API")
 
@@ -530,6 +518,15 @@ def run_debate(config: dict):
     moderator = ctx.moderator
     participants = ctx.participants
 
+    try:
+        _run_debate_inner(ctx, session_id, moderator, participants)
+    except Exception as e:
+        broadcast(session_id, "status", {"message": f"辯論發生錯誤：{e}"})
+    finally:
+        ctx.finish()
+
+
+def _run_debate_inner(ctx, session_id, moderator, participants):
     # ── header ──
     ctx.write_log(f"# AI 辯論：{ctx.topic[:50]}\n\n")
     ctx.write_log(f"**開始時間：** {datetime.now():%Y-%m-%d %H:%M:%S}\n")
@@ -567,7 +564,7 @@ def run_debate(config: dict):
             broadcast(session_id, "status", {"message": "辯論已被手動停止"})
             break
 
-        sess.debate_state["current_round"] = round_num
+        ctx.sess.debate_state["current_round"] = round_num
         ctx.write_log(f"## 第 {round_num} 輪\n\n")
         broadcast(session_id, "round", {"round": round_num, "total": ctx.rounds})
 
@@ -617,7 +614,7 @@ def run_debate(config: dict):
 
     # ── 最終結論 ──
     if not ctx.stop_requested:
-        sess.debate_state["current_round"] = ctx.rounds
+        ctx.sess.debate_state["current_round"] = ctx.rounds
         broadcast(session_id, "round", {"round": ctx.rounds, "total": ctx.rounds, "label": "最終結論"})
         ctx.write_log("## 最終結論\n\n")
 
@@ -638,8 +635,6 @@ def run_debate(config: dict):
         ctx.speak(moderator, final_prompt, rnd=ctx.rounds, phase="final", max_tok=3000)
         ctx.write_log(f"\n**結束時間：** {datetime.now():%Y-%m-%d %H:%M:%S}\n")
 
-    ctx.finish()
-
 
 def run_debate_no_moderator(config: dict):
     """無主持人模式"""
@@ -654,6 +649,15 @@ def run_debate_no_moderator(config: dict):
 
     participants = ctx.participants
 
+    try:
+        _run_debate_no_mod_inner(ctx, session_id, participants)
+    except Exception as e:
+        broadcast(session_id, "status", {"message": f"辯論發生錯誤：{e}"})
+    finally:
+        ctx.finish()
+
+
+def _run_debate_no_mod_inner(ctx, session_id, participants):
     names = ", ".join(p["name"] for p in participants)
     ctx.write_log(f"# AI 辯論：{ctx.topic[:50]}\n\n")
     ctx.write_log(f"**開始時間：** {datetime.now():%Y-%m-%d %H:%M:%S}\n")
@@ -674,7 +678,7 @@ def run_debate_no_moderator(config: dict):
         if ctx.stop_requested:
             broadcast(session_id, "status", {"message": "辯論已被手動停止"})
             break
-        sess.debate_state["current_round"] = round_num
+        ctx.sess.debate_state["current_round"] = round_num
         ctx.write_log(f"## 第 {round_num} 輪\n\n")
         broadcast(session_id, "round", {"round": round_num, "total": ctx.rounds})
 
@@ -704,8 +708,6 @@ def run_debate_no_moderator(config: dict):
         ctx.write_log(f"## 最終總結\n\n{final}\n\n")
         ctx.write_log(f"**結束時間：** {datetime.now():%Y-%m-%d %H:%M:%S}\n")
         broadcast(session_id, "message", {"speaker": "最終總結", "content": final, "round": ctx.rounds, "phase": "final"})
-
-    ctx.finish()
 
 
 # ── 路由 ──────────────────────────────────────────────
@@ -748,14 +750,20 @@ def parse_participant(p: dict) -> dict:
 
 @app.route("/api/start", methods=["POST"])
 def start_debate():
-    sess = create_session()
-
     data = request.get_json(silent=True) or {}
     try:
         rounds = max(1, min(int(data.get("rounds", 6)), 6))
         max_tokens = max(100, min(int(data.get("max_tokens", 1000)), 4000))
     except (ValueError, TypeError):
         return jsonify({"error": "輪數或 Token 上限格式不正確"}), 400
+
+    raw_participants = data.get("participants", [])
+    if len(raw_participants) < 2:
+        return jsonify({"error": "至少需要 2 位參與者"}), 400
+    if len(raw_participants) > 5:
+        return jsonify({"error": "最多 5 位參與者"}), 400
+
+    sess = create_session()
 
     config = {
         "session_id": sess.session_id,
@@ -776,11 +784,8 @@ def start_debate():
 
     config["generate_video"] = bool(data.get("generate_video"))
 
-    for p in data.get("participants", []):
+    for p in raw_participants:
         config["participants"].append(parse_participant(p))
-
-    if len(config["participants"]) < 2:
-        return jsonify({"error": "至少需要 2 位參與者"}), 400
 
     with sess.state_lock:
         sess.debate_state["running"] = True
@@ -897,8 +902,11 @@ def generate_config():
     data = request.get_json(silent=True) or {}
     category = data.get("category", "")
     outline = data.get("outline", "")
-    count = int(data.get("count", 3))
-    count = max(2, min(count, 6))
+    try:
+        count = int(data.get("count", 3))
+    except (ValueError, TypeError):
+        count = 3
+    count = max(2, min(count, 5))
 
     prompt = f"""你是辯論設定產生器。請根據以下條件產出 JSON 設定：
 
@@ -937,8 +945,8 @@ def generate_config():
         chunks = []
         for chunk in resp:
             if chunk.choices and chunk.choices[0].delta.content:
-                    chunks.append(chunk.choices[0].delta.content)
-            full = "".join(chunks)
+                chunks.append(chunk.choices[0].delta.content)
+        full = "".join(chunks)
 
         full = re.sub(r"<think>.*?</think>\s*", "", full, flags=re.DOTALL)
         # 提取 JSON

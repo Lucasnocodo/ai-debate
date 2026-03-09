@@ -212,7 +212,6 @@
   .participant-card:nth-child(3)::before { background: var(--yellow); box-shadow: 0 0 8px rgba(240,192,32,0.4); }
   .participant-card:nth-child(4)::before { background: var(--purple); box-shadow: 0 0 8px rgba(168,85,247,0.4); }
   .participant-card:nth-child(5)::before { background: var(--cyan); box-shadow: 0 0 8px rgba(0,229,255,0.4); }
-  .participant-card:nth-child(6)::before { background: var(--pink); box-shadow: 0 0 8px rgba(236,72,153,0.4); }
   /* 掃描線動畫 */
   .participant-card::after {
     content: ''; position: absolute; top: -100%; left: 0; width: 100%; height: 40px;
@@ -605,7 +604,7 @@
 
   /* ── 捲動到底部按鈕 ── */
   .scroll-bottom-btn {
-    position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%);
+    position: absolute; bottom: 110px; left: 50%; transform: translateX(-50%);
     background: var(--surface2); color: var(--cyan);
     border: 1px solid rgba(0,229,255,0.3); border-radius: 20px;
     padding: 8px 18px; font-size: 12px; font-weight: 600; cursor: pointer; z-index: 10;
@@ -649,7 +648,7 @@
   }
 
   .collapsible { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
-  .collapsible.open { max-height: 500px; }
+  .collapsible.open { max-height: 1200px; }
 
   /* ── 快速生成 ── */
   .gen-box {
@@ -791,7 +790,7 @@
         <div class="gen-row">
           <div class="field">
             <label>辯論人數</label>
-            <input type="number" id="gen-count" value="3" min="2" max="6">
+            <input type="number" id="gen-count" value="3" min="2" max="5">
           </div>
           <div class="field">
             <button class="btn btn-primary" id="btn-generate" onclick="generateConfig()" style="white-space:nowrap;margin-top:20px">一鍵生成設定</button>
@@ -908,7 +907,10 @@ function renderMarkdown(text) {
   html = html.replace(/^---$/gm, '<hr>');
   html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
   html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
-  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/^\d+\. (.+)$/gm, '<oli>$1</oli>');
+  html = html.replace(/((?:<oli>.*<\/oli>\n?)+)/g, function(m) {
+    return '<ol>' + m.replace(/<\/?oli>/g, function(t) { return t.replace('oli', 'li'); }) + '</ol>';
+  });
   html = html.replace(/\n{2,}/g, '</p><p>');
   html = html.replace(/\n/g, '<br>');
   return '<p>' + html + '</p>';
@@ -1291,6 +1293,7 @@ function showParticipantsSection() {
   if (sec) sec.style.display = '';
 }
 function addParticipant(preset) {
+  if (document.querySelectorAll('.participant-card').length >= 5) { alert('最多 5 位參與者'); return; }
   const idx = participantCount++;
   const container = document.getElementById('participants');
   const card = document.createElement('div');
@@ -1553,6 +1556,8 @@ function startDebate() {
       switchToTab(tab.id);
       connectSSE(tab);
       startInitLoader(tab.id);
+    }).catch(err => {
+      alert('啟動辯論失敗：' + (err.message || String(err)));
     });
 }
 
@@ -1607,7 +1612,7 @@ function stopDebate(tabId) {
   }).then(r => r.json()).then(() => {
     const el = panelEl(tabId, '.status-text');
     if (el) el.textContent = '停止中...';
-  });
+  }).catch(() => {});
 }
 
 function setTabRunning(tabId, running) {
@@ -1658,7 +1663,7 @@ function submitHumanInput(tabId) {
   }).then(r => r.json()).then(data => {
     if (data.error) { alert(data.error); return; }
     hideHumanInput(tabId);
-  });
+  }).catch(err => { alert('送出失敗：' + (err.message || String(err))); });
 }
 function skipHumanTurn(tabId) {
   const tab = getTab(tabId);
@@ -1666,7 +1671,7 @@ function skipHumanTurn(tabId) {
   fetch('/api/human_input', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ text: '（跳過此輪）', session_id: tab.sessionId })
-  }).then(() => hideHumanInput(tabId));
+  }).then(() => hideHumanInput(tabId)).catch(() => {});
 }
 function handleHumanKeydown(e, tabId) {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitHumanInput(tabId); }
@@ -1774,7 +1779,7 @@ function skipFromModal() {
 function getSpeakerClass(tabId, speaker) {
   const tab = getTab(tabId);
   const modName = tab ? tab.moderatorName : '';
-  if (modName && speaker.includes(modName) || speaker.includes('主持人') || speaker.includes('主持')) return 'moderator';
+  if ((modName && speaker.includes(modName)) || speaker.includes('主持人') || speaker.includes('主持')) return 'moderator';
   if (speaker.includes('總結')) return 'summary';
   const all = tab ? tab.participants : [];
   for (let i = 0; i < all.length; i++) {
@@ -1904,7 +1909,8 @@ function connectSSE(tab) {
       if (tab.eventSource) { tab.eventSource.close(); tab.eventSource = null; }
       fetch(`/api/state?session_id=${tab.sessionId}`)
         .then(r => r.json())
-        .then(d => { if (d.running) connectSSE(tab); else setTabRunning(tabId, false); });
+        .then(d => { if (d.running) connectSSE(tab); else setTabRunning(tabId, false); })
+        .catch(() => { setTimeout(() => connectSSE(tab), 5000); });
     }, 3000);
   };
 }

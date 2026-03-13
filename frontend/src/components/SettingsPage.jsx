@@ -208,7 +208,7 @@ export default function SettingsPage({
                 <ToggleField label="主持人" checked={config.modEnabled} onToggle={onToggleModerator} description="啟用主持人" />
               </div>
 
-              <div className="row">
+              <div className="row rounds-row">
                 <Field label="輪數" error={errors.rounds}>
                   <input
                     type="number"

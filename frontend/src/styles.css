@@ -857,6 +857,7 @@
     position: relative; overflow: hidden;
     contain: paint;
     transform: translateZ(0);
+    margin-bottom: 24px;
   }
   .gen-box::before {
     content: ''; position: absolute; top: -1px; left: 0; right: 0; height: 1px;
@@ -898,6 +899,7 @@
   .gen-row { display: flex; gap: 10px; align-items: flex-end; }
   .gen-row .field { flex: 1; }
   .gen-row .field:last-child { flex: 0 0 auto; }
+  .rounds-row { margin-bottom: 20px; }
   .gen-outline-wrap {
     display: flex; flex-direction: column; gap: 8px;
   }

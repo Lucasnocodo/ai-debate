@@ -1354,7 +1354,12 @@ def generate_config_stream():
         threading.Thread(target=worker, daemon=True).start()
 
         while True:
-            payload = event_queue.get()
+            try:
+                payload = event_queue.get(timeout=10)
+            except queue.Empty:
+                # Keep the NDJSON stream alive on hosted platforms while the model is still generating.
+                yield "\n"
+                continue
             if payload is None:
                 break
             yield emit_ndjson(payload)
@@ -1362,6 +1367,7 @@ def generate_config_stream():
     return Response(streaming_generator(), mimetype="application/x-ndjson", headers={
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
     })
 
 

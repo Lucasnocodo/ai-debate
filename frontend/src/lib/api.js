@@ -6,6 +6,16 @@ async function parseJson(response) {
   return data;
 }
 
+function isCompleteConfig(config, expectedCount) {
+  return Boolean(
+    config?.topic
+      && config?.moderator?.name
+      && config?.moderator?.system
+      && Array.isArray(config?.participants)
+      && config.participants.length >= expectedCount,
+  );
+}
+
 export function getModels() {
   return fetch("/api/models").then(parseJson);
 }
@@ -37,6 +47,11 @@ export async function generateConfigStream(payload, onEvent, options = {}) {
   const decoder = new TextDecoder();
   let buffer = "";
   let finalConfig = null;
+  const partialConfig = {
+    topic: "",
+    moderator: null,
+    participants: [],
+  };
 
   while (true) {
     const { value, done } = await reader.read();
@@ -49,6 +64,15 @@ export async function generateConfigStream(payload, onEvent, options = {}) {
       if (!trimmed) continue;
       const event = JSON.parse(trimmed);
       onEvent?.(event);
+      if (event.type === "topic" && event.topic) {
+        partialConfig.topic = event.topic;
+      }
+      if (event.type === "participant" && event.participant) {
+        partialConfig.participants.push(event.participant);
+      }
+      if (event.type === "moderator" && event.moderator) {
+        partialConfig.moderator = event.moderator;
+      }
       if (event.type === "done") finalConfig = event.config || null;
       if (event.type === "error") throw new Error(event.error || "生成設定失敗");
     }
@@ -59,12 +83,32 @@ export async function generateConfigStream(payload, onEvent, options = {}) {
   if (buffer.trim()) {
     const event = JSON.parse(buffer.trim());
     onEvent?.(event);
+    if (event.type === "topic" && event.topic) {
+      partialConfig.topic = event.topic;
+    }
+    if (event.type === "participant" && event.participant) {
+      partialConfig.participants.push(event.participant);
+    }
+    if (event.type === "moderator" && event.moderator) {
+      partialConfig.moderator = event.moderator;
+    }
     if (event.type === "done") finalConfig = event.config || null;
     if (event.type === "error") throw new Error(event.error || "生成設定失敗");
   }
 
+  if (!finalConfig && isCompleteConfig(partialConfig, Number.parseInt(payload.count, 10) || 3)) {
+    return partialConfig;
+  }
+
   if (!finalConfig) {
-    throw new Error("生成流程未完成");
+    onEvent?.({
+      type: "stage",
+      stage: "FINALIZING",
+      stepIndex: 3,
+      progress: 96,
+      message: "串流延遲，正在等待最終整理...",
+    });
+    return generateConfig(payload);
   }
   return finalConfig;
 }

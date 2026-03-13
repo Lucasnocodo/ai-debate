@@ -56,7 +56,6 @@
 │   ├── src/
 │   ├── public/
 │   └── package.json
-├── templates/index.html   # 舊版 fallback 頁面
 ├── output/                # 辯論紀錄輸出
 ├── requirements.txt
 └── render-build.sh        # Render build script
@@ -233,7 +232,6 @@ SSE 事件流，提供即時辯論狀態。
 - 生成設定的總耗時仍取決於 OpenRouter 模型速度
 - 免費模型可用性會波動，偶爾會 fallback 或失敗
 - 目前沒有完整自動化測試
-- `templates/index.html` 仍保留作為舊版 fallback，不是主要前端來源
 
 ## Development Notes
 

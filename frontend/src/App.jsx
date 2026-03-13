@@ -992,7 +992,7 @@ export default function App() {
 
   return (
     <>
-      <LavaBackground />
+      {showSettings ? <LavaBackground /> : null}
       <SettingsPage
         settingsTab={settingsTab}
         onSwitchTab={handleSwitchSettingsTab}

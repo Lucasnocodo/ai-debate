@@ -164,6 +164,8 @@ npm run dev
 gunicorn app:app
 ```
 
+專案已內建 [gunicorn.conf.py](/Users/chenyuda/ai-debate/gunicorn.conf.py)，Gunicorn 啟動時會自動載入較長的 timeout 與 keepalive 設定，避免 `generate_config_stream` 在 Render 上被 30 秒預設 timeout 提前切斷。
+
 ### Render environment variables
 
 至少填入：

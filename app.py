@@ -1358,7 +1358,7 @@ def generate_config_stream():
                 payload = event_queue.get(timeout=10)
             except queue.Empty:
                 # Keep the NDJSON stream alive on hosted platforms while the model is still generating.
-                yield "\n"
+                yield emit_ndjson({"type": "keepalive"})
                 continue
             if payload is None:
                 break

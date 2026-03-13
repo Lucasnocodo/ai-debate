@@ -12,25 +12,43 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file, send_from_directory, stream_with_context
+from opencc import OpenCC
 from openai import OpenAI
 
 load_dotenv(Path(__file__).parent / ".env")
 
 app = Flask(__name__)
 
-API_KEY = os.environ["LLM_API_KEY"]
-BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.banana2556.com/v1")
+API_KEY = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LLM_API_KEY")
+if not API_KEY:
+    raise RuntimeError("請設定 OPENROUTER_API_KEY 或 LLM_API_KEY")
+
+BASE_URL = os.environ.get("LLM_BASE_URL", "").strip() or "https://openrouter.ai/api/v1"
+DEFAULT_FREE_MODEL = os.environ.get("OPENROUTER_DEFAULT_MODEL", "").strip() or "openrouter/hunter-alpha"
+APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "").strip() or "ai-debate"
+APP_URL = os.environ.get("OPENROUTER_APP_URL", "").strip()
+FALLBACK_FREE_MODELS = [
+    DEFAULT_FREE_MODEL,
+    "google/gemma-3-4b-it:free",
+    "arcee-ai/trinity-mini:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+]
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 
-# proxy base（去掉 /v1）
-PROXY_BASE = BASE_URL.rstrip("/")
-if PROXY_BASE.endswith("/v1"):
-    PROXY_BASE = PROXY_BASE[:-3]
+client_headers = {
+    "User-Agent": "ai-debate/1.0",
+    "X-Title": APP_NAME,
+}
+if APP_URL:
+    client_headers["HTTP-Referer"] = APP_URL
 
-client = OpenAI(api_key=API_KEY, base_url=BASE_URL, default_headers={"User-Agent": "ai-debate/1.0"})
+client = OpenAI(api_key=API_KEY, base_url=BASE_URL, default_headers=client_headers)
+opencc_tw = OpenCC("s2twp")
 
 
 
@@ -52,6 +70,7 @@ class SessionState:
         self.event_queues: list[queue.Queue] = []
         self.eq_lock = threading.Lock()
         self.human_input_queue: queue.Queue = queue.Queue(maxsize=1)
+        self.human_time_limit = 120
         self.state_lock = threading.Lock()
 
 
@@ -69,6 +88,17 @@ def create_session() -> SessionState:
     with _sessions_lock:
         _sessions[s.session_id] = s
     return s
+
+
+def create_session_if_available() -> SessionState | None:
+    with _sessions_lock:
+        running = sum(1 for sess in _sessions.values() if sess.debate_state["running"])
+        if running >= MAX_CONCURRENT_DEBATES:
+            return None
+        sess = SessionState()
+        sess.debate_state["running"] = True
+        _sessions[sess.session_id] = sess
+        return sess
 
 
 def broadcast(session_id: str, event_type: str, data: dict):
@@ -91,12 +121,105 @@ def broadcast(session_id: str, event_type: str, data: dict):
 
 MAX_RETRIES = 3
 RETRY_DELAYS = [10, 30, 60]  # 秒
+FIXED_MAX_TOKENS = 650
+MIN_HUMAN_TIME_LIMIT = 30
+MAX_HUMAN_TIME_LIMIT = 300
+MAX_AI_PARTICIPANTS = 4
+MAX_CONCURRENT_DEBATES = 3
+TARGET_DEBATE_RESPONSE_CHARS = 300
+SAFETY_DEBATE_RESPONSE_CHARS = 900
+TAIWAN_TRADITIONAL_CHINESE_RULES = (
+    "語言硬性規則：你只能使用台灣繁體中文（zh-TW）作答。"
+    "禁止使用簡體中文、禁止混用中國用語。"
+    "若必須保留英文，僅限模型名稱、程式碼、URL、專有名詞或引用內容，"
+    "其餘敘述一律改寫成自然的台灣繁體中文。"
+    f"每次回覆請優先精簡在 {TARGET_DEBATE_RESPONSE_CHARS} 字左右。"
+    "若論點還沒講完，可以適度延伸，但一定要把完整句子與結論講完，禁止留下半句或未完成收尾。"
+    "語氣不要太學術或太官腔。"
+    "要有明確立場、敢直接反駁對手，可以帶一點嘴砲、吐槽與火藥味，"
+    "但核心仍要有論點、有邏輯，不准只剩情緒發言。"
+)
 
 RETRYABLE_KEYWORDS = ("503", "overload", "timeout", "502", "429")
 
 
 def _is_retryable(err_str: str) -> bool:
     return any(k in err_str for k in RETRYABLE_KEYWORDS)
+
+
+def _should_fallback_model(err_str: str) -> bool:
+    lower = err_str.lower()
+    return (
+        _is_retryable(lower)
+        or "no endpoints available" in lower
+        or "connection error" in lower
+        or "rate-limit" in lower
+        or "rate limited" in lower
+    )
+
+
+def _candidate_models(model: str) -> list[str]:
+    seen = set()
+    candidates = []
+    for item in [model, *FALLBACK_FREE_MODELS]:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        candidates.append(item)
+    return candidates
+
+
+def _create_chat_completion(model: str, messages: list[dict], **kwargs):
+    last_error = None
+    for candidate in _candidate_models(model):
+        try:
+            resp = client.chat.completions.create(
+                model=candidate,
+                messages=messages,
+                **kwargs,
+            )
+            return candidate, resp
+        except Exception as e:
+            last_error = e
+            if not _should_fallback_model(str(e)):
+                raise
+    if last_error:
+        raise last_error
+    raise RuntimeError("沒有可用的模型")
+
+
+def _build_messages(system: str, messages: list[dict]) -> list[dict]:
+    merged = list(messages)
+    parts = [TAIWAN_TRADITIONAL_CHINESE_RULES]
+    if system.strip():
+        parts.append(f"請先遵守以下角色設定與規則：\n{system.strip()}")
+    system_prefix = "\n\n".join(parts).strip() + "\n\n"
+    if merged and merged[0].get("role") == "user":
+        first = dict(merged[0])
+        first["content"] = system_prefix + str(first.get("content", ""))
+        merged[0] = first
+        return merged
+    return [{"role": "user", "content": system_prefix}] + merged
+
+
+def _to_taiwan_traditional(text: str) -> str:
+    return opencc_tw.convert(text or "")
+
+
+def _truncate_debate_output(text: str, max_chars: int = SAFETY_DEBATE_RESPONSE_CHARS) -> str:
+    cleaned = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    truncated = cleaned[:max_chars].rstrip("，、；：,.!?！？ \n")
+    last_break = max(truncated.rfind(sep) for sep in ("。", "！", "？", "\n"))
+    if last_break >= max_chars // 2:
+        truncated = truncated[: last_break + 1].rstrip()
+    return truncated
+
+
+def running_session_count() -> int:
+    with _sessions_lock:
+        return sum(1 for sess in _sessions.values() if sess.debate_state["running"])
 
 
 def _with_retry(session_id: str, model: str, fn, error_prefix: str = "API") -> str:
@@ -107,9 +230,6 @@ def _with_retry(session_id: str, model: str, fn, error_prefix: str = "API") -> s
         except Exception as e:
             if _is_retryable(str(e)) and attempt < MAX_RETRIES:
                 delay = RETRY_DELAYS[attempt]
-                broadcast(session_id, "status", {
-                    "message": f"{model} 暫時不可用，{delay}s 後重試（{attempt+1}/{MAX_RETRIES}）..."
-                })
                 time.sleep(delay)
                 continue
             return f"[{error_prefix} 錯誤: {e}]"
@@ -118,9 +238,10 @@ def _with_retry(session_id: str, model: str, fn, error_prefix: str = "API") -> s
 
 def call_api(session_id: str, model: str, system: str, messages: list[dict], max_tokens: int) -> str:
     def _call():
-        resp = client.chat.completions.create(
+        request_messages = _build_messages(system, messages)
+        actual_model, resp = _create_chat_completion(
             model=model,
-            messages=[{"role": "system", "content": system}] + messages,
+            messages=request_messages,
             max_tokens=max_tokens,
             temperature=0.8,
             stream=True,
@@ -131,69 +252,61 @@ def call_api(session_id: str, model: str, system: str, messages: list[dict], max
                 chunks.append(chunk.choices[0].delta.content)
         full = "".join(chunks)
         full = re.sub(r"<think>.*?</think>\s*", "", full, flags=re.DOTALL)
-        return full.strip()
+        return _truncate_debate_output(_to_taiwan_traditional(full).strip())
 
     return _with_retry(session_id, model, _call, "API")
 
 
-def call_gemini(session_id: str, model: str, system: str, prompt: str, max_tokens: int) -> str:
-    """透過 proxy 的 Gemini relay API 呼叫"""
-    import requests
-
-    def _call():
-        url = f"{PROXY_BASE}/v1beta/models/{model}:generateContent"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "maxOutputTokens": max_tokens,
-                "temperature": 0.8,
-            },
-        }
-        if system:
-            payload["systemInstruction"] = {"parts": [{"text": system}]}
-
-        resp = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=180,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if "error" in data:
-            err_msg = str(data["error"].get("message", data["error"]))
-            raise RuntimeError(err_msg)
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return "[Gemini 錯誤: 回應中無 candidates]"
-        text = (candidates[0]
-                .get("content", {})
-                .get("parts", [{}])[0]
-                .get("text", ""))
-        return text.strip()
-
-    return _with_retry(session_id, model, _call, "Gemini")
+def _is_free_price(value) -> bool:
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
 
 
-def call_claude_api(session_id: str, model: str, system: str, prompt: str, max_tokens: int) -> str:
-    def _call():
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=0.8,
-        )
-        content = resp.choices[0].message.content or ""
-        return re.sub(r"<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
+def _is_text_model(model: dict) -> bool:
+    arch = model.get("architecture") or {}
+    input_modalities = set(arch.get("input_modalities") or [])
+    output_modalities = set(arch.get("output_modalities") or [])
+    return "text" in input_modalities and "text" in output_modalities
 
-    return _with_retry(session_id, model, _call, "Claude API")
+
+def get_free_models() -> list[str]:
+    """從 OpenRouter 取得免費文字模型清單。"""
+    fallback = list(FALLBACK_FREE_MODELS)
+    url = f"{BASE_URL.rstrip('/')}/models"
+    resp = requests.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            **client_headers,
+        },
+        timeout=20,
+    )
+    resp.raise_for_status()
+    data = resp.json().get("data", [])
+
+    models = []
+    for item in data:
+        pricing = item.get("pricing") or {}
+        if not (_is_free_price(pricing.get("prompt")) and _is_free_price(pricing.get("completion"))):
+            continue
+        if not _is_text_model(item):
+            continue
+        model_id = item.get("id", "").strip()
+        if model_id == "openrouter/free":
+            continue
+        if model_id and model_id not in models:
+            models.append(model_id)
+
+    if not models:
+        return fallback
+    prioritized = []
+    for model in FALLBACK_FREE_MODELS:
+        if model in models:
+            prioritized.append(model)
+            models.remove(model)
+    return prioritized + sorted(models)
 
 
 VIDEO_DIR = OUTPUT_DIR / "videos"
@@ -256,7 +369,7 @@ def call_human(session_id: str, speaker: str, prompt: str) -> str:
         sess.debate_state["waiting_speaker"] = speaker
     broadcast(session_id, "waiting_human", {"speaker": speaker, "context": prompt})
     try:
-        response = sess.human_input_queue.get(timeout=600)
+        response = sess.human_input_queue.get(timeout=sess.human_time_limit)
         return response
     except queue.Empty:
         return "[人類未在時限內回應，跳過此輪]"
@@ -271,12 +384,8 @@ def call_participant(session_id: str, participant: dict, prompt: str, max_tokens
     via = participant["via"]
     if via == "human":
         return call_human(session_id, participant["name"], prompt)
-    elif via == "claude":
-        return call_claude_api(session_id, participant["model"], participant["system"], prompt, max_tokens)
-    else:
-        # GPT / Grok / Gemini 全部走 OpenAI 格式
-        messages = [{"role": "user", "content": prompt}]
-        return call_api(session_id, participant["model"], participant["system"], messages, max_tokens)
+    messages = [{"role": "user", "content": prompt}]
+    return call_api(session_id, participant["model"], participant["system"], messages, max_tokens)
 
 
 def extract_cue_order(mod_response: str, participants: list[dict]) -> list[dict]:
@@ -301,7 +410,7 @@ def extract_cue_order(mod_response: str, participants: list[dict]) -> list[dict]
     return [p for p, _ in mentioned] + unmentioned
 
 
-def build_context(history: list[dict], latest_n: int = 6) -> str:
+def build_context(history: list[dict], latest_n: int = 4) -> str:
     recent = history[-latest_n:] if len(history) > latest_n else history
     lines = []
     for msg in recent:
@@ -379,8 +488,8 @@ MODERATOR_SYSTEM = """你是這場辯論的主持人。你的職責：
 7. **收尾**：在最後一輪產出完整的結論報告
 
 語言：繁體中文
-風格：專業、中立、有條理，適時展現幽默感
-每次發言控制在 300 字以內（結論報告除外）"""
+風格：不失中立，但節奏要俐落、敢點破漏洞，必要時可用輕微吐槽或酸句增加張力
+每次發言盡量精簡在 300 字左右；若論點尚未收完，可以稍微延伸，但一定要完整收尾（結論報告同理）"""
 
 
 # ── 辯論共用邏輯 ─────────────────────────────────────
@@ -632,7 +741,7 @@ def _run_debate_inner(ctx, session_id, moderator, participants):
             f"7. 主持人推薦：綜合評估最值得執行的前 5 個方案\n"
             f"8. 結語與感謝"
         )
-        ctx.speak(moderator, final_prompt, rnd=ctx.rounds, phase="final", max_tok=3000)
+        ctx.speak(moderator, final_prompt, rnd=ctx.rounds, phase="final", max_tok=FIXED_MAX_TOKENS)
         ctx.write_log(f"\n**結束時間：** {datetime.now():%Y-%m-%d %H:%M:%S}\n")
 
 
@@ -704,7 +813,7 @@ def _run_debate_no_mod_inner(ctx, session_id, participants):
             "4. 報酬潛力最高的前 3 個方案\n5. 綜合推薦前 5 名\n\n"
             f"全部討論：\n{history_ctx}"
         )
-        final = call_participant(session_id, participants[0], final_prompt, 2000)
+        final = call_participant(session_id, participants[0], final_prompt, FIXED_MAX_TOKENS)
         ctx.write_log(f"## 最終總結\n\n{final}\n\n")
         ctx.write_log(f"**結束時間：** {datetime.now():%Y-%m-%d %H:%M:%S}\n")
         broadcast(session_id, "message", {"speaker": "最終總結", "content": final, "round": ctx.rounds, "phase": "final"})
@@ -714,31 +823,55 @@ def _run_debate_no_mod_inner(ctx, session_id, participants):
 
 @app.route("/")
 def index():
+    if (FRONTEND_DIST / "index.html").exists():
+        return send_from_directory(FRONTEND_DIST, "index.html")
     return render_template("index.html")
+
+
+@app.route("/favicon.svg")
+def favicon():
+    if (FRONTEND_DIST / "favicon.svg").exists():
+        return send_from_directory(FRONTEND_DIST, "favicon.svg")
+    public_dir = (Path(__file__).parent / "frontend" / "public").resolve()
+    candidate = (public_dir / "favicon.svg").resolve()
+    if candidate.exists() and str(candidate).startswith(str(public_dir)):
+        return send_from_directory(public_dir, "favicon.svg")
+    return jsonify({"error": "找不到檔案"}), 404
+
+
+@app.route("/favicon.ico")
+def favicon_legacy():
+    return favicon()
+
+
+@app.route("/assets/<path:filename>")
+def frontend_assets(filename):
+    candidate = (FRONTEND_DIST / "assets" / filename).resolve()
+    assets_dir = (FRONTEND_DIST / "assets").resolve()
+    if candidate.exists() and str(candidate).startswith(str(assets_dir)):
+        return send_from_directory(assets_dir, filename)
+    return jsonify({"error": "找不到檔案"}), 404
 
 
 @app.route("/api/models")
 def get_models():
     try:
-        resp = client.models.list()
-        models = [m.id for m in resp.data if "imagine" not in m.id]
-        models.sort()
+        models = get_free_models()
     except Exception:
-        models = ["claude-sonnet-4-6", "claude-opus-4-6"]
+        models = [
+            *FALLBACK_FREE_MODELS,
+        ]
 
     models.append("human (you)")
     return jsonify({"models": models})
 
 
 def parse_participant(p: dict) -> dict:
-    model = p.get("model", "gpt-5.4")
+    model = p.get("model", DEFAULT_FREE_MODEL)
     ml = model.lower()
     if ml.startswith("human"):
         via, actual_model = "human", "human"
-    elif ml.startswith("claude"):
-        via, actual_model = "claude", model
     else:
-        # GPT / Grok / Gemini 都走 OpenAI 格式
         via, actual_model = "api", model
     return {
         "name": p.get("name", model),
@@ -753,23 +886,46 @@ def start_debate():
     data = request.get_json(silent=True) or {}
     try:
         rounds = max(1, min(int(data.get("rounds", 6)), 6))
-        max_tokens = max(100, min(int(data.get("max_tokens", 1000)), 4000))
     except (ValueError, TypeError):
-        return jsonify({"error": "輪數或 Token 上限格式不正確"}), 400
+        return jsonify({"error": "輪數格式不正確"}), 400
 
     raw_participants = data.get("participants", [])
     if len(raw_participants) < 2:
         return jsonify({"error": "至少需要 2 位參與者"}), 400
-    if len(raw_participants) > 5:
-        return jsonify({"error": "最多 5 位參與者"}), 400
+    human_count = 0
+    ai_count = 0
+    for participant in raw_participants:
+        model = str(participant.get("model", "")).lower()
+        if model.startswith("human"):
+            human_count += 1
+        else:
+            ai_count += 1
+    if human_count > 1:
+        return jsonify({"error": "最多只能有 1 位人類參與者"}), 400
+    if ai_count < 2:
+        return jsonify({"error": "至少需要 2 位 AI 辯論者"}), 400
+    if ai_count > MAX_AI_PARTICIPANTS:
+        return jsonify({"error": f"AI 辯論者最多 {MAX_AI_PARTICIPANTS} 位"}), 400
+    if len(raw_participants) > MAX_AI_PARTICIPANTS + 1:
+        return jsonify({"error": "參與者數量超出上限"}), 400
 
-    sess = create_session()
+    try:
+        human_time_limit = int(data.get("human_time_limit", 120))
+    except (ValueError, TypeError):
+        return jsonify({"error": "人類回覆時限格式不正確"}), 400
+    if not MIN_HUMAN_TIME_LIMIT <= human_time_limit <= MAX_HUMAN_TIME_LIMIT:
+        return jsonify({"error": f"人類回覆時限需介於 {MIN_HUMAN_TIME_LIMIT} 到 {MAX_HUMAN_TIME_LIMIT} 秒"}), 400
+
+    sess = create_session_if_available()
+    if not sess:
+        return jsonify({"error": f"同時進行中的辯論最多 {MAX_CONCURRENT_DEBATES} 場，請先停止或等待其中一場結束。"}), 400
+    sess.human_time_limit = human_time_limit
 
     config = {
         "session_id": sess.session_id,
         "topic": data.get("topic", "目前最有效的賺錢方式"),
         "rounds": rounds,
-        "max_tokens": max_tokens,
+        "max_tokens": FIXED_MAX_TOKENS,
         "participants": [],
     }
 
@@ -786,9 +942,6 @@ def start_debate():
 
     for p in raw_participants:
         config["participants"].append(parse_participant(p))
-
-    with sess.state_lock:
-        sess.debate_state["running"] = True
 
     target = run_debate if config.get("moderator") else run_debate_no_moderator
     thread = threading.Thread(target=target, args=(config,), daemon=True)
@@ -896,6 +1049,239 @@ def get_log(filename):
     return Response(log_path.read_text(encoding="utf-8"), mimetype="text/markdown; charset=utf-8")
 
 
+GENERATE_STYLE_PROFILES: dict[str, dict[str, str]] = {
+    "trash-talk": {
+        "label": "純嘴砲",
+        "topic_rules": "整體節奏要直接、帶火藥味，允許犀利互嗆與公開拆台，但仍要保留可辯論的實質爭點。",
+        "participant_rules": "角色要敢開酸、敢補刀、敢正面打臉對手，但不能只剩情緒，仍要拿出論點與例子。",
+        "moderator_rules": "主持人要能控住失控場面，適度吐槽、拱火、逼雙方正面回應，不要太官腔。",
+    },
+    "serious": {
+        "label": "正經派",
+        "topic_rules": "整體風格偏理性嚴謹，著重結構、定義與政策含義，減少低階情緒發言。",
+        "participant_rules": "角色應該論證完整、立場清楚，以邏輯、框架、案例推進攻防，不必刻意嘴砲。",
+        "moderator_rules": "主持人重視節奏與歸納，追問要精準，語氣專業俐落但不要冷場。",
+    },
+    "variety": {
+        "label": "綜藝感",
+        "topic_rules": "整體像有張力的談話節目，節奏快、話題夠爆點，讓人一看就想聽雙方互槓。",
+        "participant_rules": "角色可以更戲劇化、記憶點更高，講話要有梗、有節目效果，但核心論點要站得住腳。",
+        "moderator_rules": "主持人要像節目主持一樣會接球、抖包袱、催節奏，把場子炒熱。",
+    },
+    "courtroom": {
+        "label": "法庭攻防",
+        "topic_rules": "整體像交叉詰問，題目要能讓雙方圍繞證據、責任、因果與矛盾點來回攻防。",
+        "participant_rules": "角色要擅長逼問、抓漏洞、要求證據，像檢辯雙方互相拆穿說法破綻。",
+        "moderator_rules": "主持人像法官兼審判長，重點是控時、要求回應問題、阻止答非所問。",
+    },
+    "scholar": {
+        "label": "學者交鋒",
+        "topic_rules": "整體維持知識密度與思辨深度，適合談理論、數據、歷史脈絡與政策後果。",
+        "participant_rules": "角色偏向研究者或專家型辯手，擅長引用案例、模型、數據與原理，但仍要敢於反駁。",
+        "moderator_rules": "主持人重視概念釐清與爭點收束，必要時把抽象論點拉回具體案例。",
+    },
+    "internet": {
+        "label": "酸民開戰",
+        "topic_rules": "整體像高品質網路戰場，語感更接地氣、更像留言區互槓，但主題仍需夠具體。",
+        "participant_rules": "角色可以更嗆、更接地氣、更像不同派系網友開戰，但不能只會情緒輸出，仍要有可驗證觀點。",
+        "moderator_rules": "主持人要像熟悉網路輿論節奏的版主，能點破幹話、抓爭點、避免洗版。",
+    },
+}
+DEFAULT_GENERATE_STYLE = "trash-talk"
+
+
+def _resolve_generate_style(style: str | None) -> dict[str, str]:
+    style_key = str(style or "").strip()
+    return GENERATE_STYLE_PROFILES.get(style_key, GENERATE_STYLE_PROFILES[DEFAULT_GENERATE_STYLE])
+
+
+def _request_generation_json(model: str, prompt_text: str, max_tokens: int = 1100) -> dict:
+    _, resp = _create_chat_completion(
+        model=model,
+        messages=_build_messages("", [{"role": "user", "content": prompt_text}]),
+        max_tokens=max_tokens,
+        temperature=0.75,
+        stream=True,
+    )
+    chunks = []
+    for chunk in resp:
+        if chunk.choices and chunk.choices[0].delta.content:
+            chunks.append(chunk.choices[0].delta.content)
+    full = _to_taiwan_traditional("".join(chunks))
+    full = re.sub(r"<think>.*?</think>\s*", "", full, flags=re.DOTALL)
+    json_match = re.search(r'\{[\s\S]*\}', full)
+    if not json_match:
+        raise ValueError("LLM 未回傳有效 JSON")
+    return json.loads(json_match.group(0))
+
+
+def _generate_topic_config(model: str, category: str, outline: str, style_profile: dict[str, str]) -> str:
+    prompt = f"""你是辯論題目設定器。請根據以下條件，只回傳 JSON：
+{{
+  "topic": "完整的辯論主題描述（120-220 字，包含背景、範圍、具體要討論的面向，以及辯論規則）"
+}}
+
+分類：{category}
+大綱：{outline or '（無，請自由發揮）'}
+辯論風格：{style_profile["label"]}
+
+要求：
+1. 主題必須有明確衝突與對立空間
+2. 要包含「互相挑戰對方論點，不要和稀泥」，並允許合理嗆聲
+3. {style_profile["topic_rules"]}
+4. 全部使用繁體中文"""
+    data = _request_generation_json(model, prompt, max_tokens=360)
+    topic = str(data.get("topic", "")).strip()
+    if not topic:
+        raise ValueError("LLM 未產出有效 topic")
+    return topic
+
+
+def _generate_participants_config(model: str, category: str, outline: str, topic: str, count: int, style_profile: dict[str, str]) -> list[dict]:
+    prompt = f"""你是辯論角色設計器。請根據以下條件，只回傳 JSON：
+{{
+  "participants": [
+    {{
+      "name": "角色名稱（有特色的暱稱 + 立場說明）",
+      "system": "角色的人格設定（90-160 字，包含：身分背景、核心立場、辯論風格、偏好的論證方式）"
+    }}
+  ]
+}}
+
+分類：{category}
+大綱：{outline or '（無，請自由發揮）'}
+辯論主題：{topic}
+辯論風格：{style_profile["label"]}
+需要人數：{count}
+
+要求：
+1. 每位參與者的立場和觀點要有明確差異，形成強烈對立或互補
+2. {style_profile["participant_rules"]}
+3. 避免太溫和、太客氣、太像公關稿
+4. 角色名稱要有辨識度，例如「張守正（保守派經濟學者）」而非「AI-1」
+5. 全部使用繁體中文"""
+    data = _request_generation_json(model, prompt, max_tokens=900)
+    raw_participants = data.get("participants") or []
+    participants = []
+    for item in raw_participants:
+        name = str((item or {}).get("name", "")).strip()
+        system = str((item or {}).get("system", "")).strip()
+        if name and system:
+            participants.append({"name": name, "system": system})
+        if len(participants) >= count:
+            break
+    if len(participants) < count:
+        raise ValueError("LLM 產出的參與者數量不足")
+    return participants
+
+
+def _generate_moderator_config(model: str, category: str, topic: str, participant_names: list[str], style_profile: dict[str, str]) -> dict:
+    moderator_prompt = f"""你要產出一個辯論設定中的主持人欄位。請只回傳 JSON：
+{{
+  "moderator": {{
+    "name": "主持人名稱",
+    "system": "主持人風格與引導重點（60-120 字）"
+  }}
+}}
+
+辯論分類：{category}
+辯論主題：{topic}
+辯論風格：{style_profile["label"]}
+參與者：{", ".join(participant_names) or '未命名參與者'}
+
+要求：
+1. 主持人需中立、會控場、會追問、會收斂爭點
+2. 名稱要自然，不要出現模型名稱
+3. system 要用繁體中文，且適合作為主持人附加指示
+4. {style_profile["moderator_rules"]}"""
+    data = _request_generation_json(model, moderator_prompt, max_tokens=420)
+    moderator = data.get("moderator") or {}
+    name = str(moderator.get("name", "")).strip()
+    system = str(moderator.get("system", "")).strip()
+    if not name or not system:
+        raise ValueError("LLM 未產出有效主持人設定")
+    return {"name": name, "system": system}
+
+
+def _generate_config_data(category: str, outline: str, count: int, model: str, style: str, progress_callback=None) -> dict:
+    style_profile = _resolve_generate_style(style)
+
+    def emit(payload: dict):
+        if progress_callback:
+            progress_callback(payload)
+
+    emit({
+        "type": "stage",
+        "stage": "ANALYZING",
+        "stepIndex": 0,
+        "progress": 8,
+        "message": f"正在分析主題方向與「{style_profile['label']}」風格...",
+    })
+    topic = _generate_topic_config(model, category, outline, style_profile)
+    emit({
+        "type": "topic",
+        "stage": "SHAPING",
+        "stepIndex": 1,
+        "progress": 28,
+        "message": "主題已生成，準備設計角色立場...",
+        "topic": topic,
+    })
+
+    emit({
+        "type": "stage",
+        "stage": "CASTING",
+        "stepIndex": 2,
+        "progress": 36,
+        "message": f"正在生成「{style_profile['label']}」風格的辯論參與者...",
+    })
+    participants = _generate_participants_config(model, category, outline, topic, count, style_profile)
+    participant_start = 36
+    participant_end = 82
+    participant_span = max(participant_end - participant_start, 1)
+    for index, participant in enumerate(participants, start=1):
+        progress = participant_start + round(participant_span * (index / len(participants)))
+        emit({
+            "type": "participant",
+            "stage": "CASTING",
+            "stepIndex": 2,
+            "progress": progress,
+            "message": f"已完成 {index}/{len(participants)} 位辯論者設定...",
+            "participant": participant,
+            "index": index,
+            "count": len(participants),
+        })
+
+    emit({
+        "type": "stage",
+        "stage": "FINALIZING",
+        "stepIndex": 3,
+        "progress": 88,
+        "message": "正在補完主持人與收斂設定...",
+    })
+    moderator = _generate_moderator_config(
+        model,
+        category,
+        topic,
+        [participant["name"] for participant in participants],
+        style_profile,
+    )
+    config = {
+        "topic": topic,
+        "moderator": moderator,
+        "participants": participants,
+        "style": style_profile["label"],
+    }
+    emit({
+        "type": "moderator",
+        "stage": "FINALIZING",
+        "stepIndex": 3,
+        "progress": 94,
+        "message": "主持人設定已生成，整理最終結果...",
+        "moderator": moderator,
+    })
+    return config
+
+
 @app.route("/api/generate_config", methods=["POST"])
 def generate_config():
     """用 LLM 根據分類與大綱自動生成辯論設定"""
@@ -906,58 +1292,77 @@ def generate_config():
         count = int(data.get("count", 3))
     except (ValueError, TypeError):
         count = 3
-    count = max(2, min(count, 5))
-
-    prompt = f"""你是辯論設定產生器。請根據以下條件產出 JSON 設定：
-
-分類：{category}
-大綱：{outline or '（無，請自由發揮）'}
-辯論人數：{count}
-
-請產出 JSON，格式如下（不要其他文字，純 JSON）：
-{{
-  "topic": "完整的辯論主題描述（200-400 字，包含背景、範圍、具體要討論的面向，以及辯論規則）",
-  "participants": [
-    {{
-      "name": "角色名稱（有特色的暱稱 + 立場說明）",
-      "system": "角色的人格設定（150-250 字，包含：身分背景、核心立場、辯論風格、偏好的論證方式）"
-    }}
-  ]
-}}
-
-要求：
-1. 每位參與者的立場和觀點要有明確差異，形成對立或互補
-2. 角色名稱要有辨識度，例如「張守正（保守派經濟學者）」而非「AI-1」
-3. 人格設定要具體、有深度，讓 AI 能據此產出有特色的觀點
-4. topic 要包含「互相挑戰對方論點，不要和稀泥」
-5. 全部使用繁體中文"""
-
-    model = data.get("model", "claude-sonnet")
+    count = max(2, min(count, MAX_AI_PARTICIPANTS))
+    model = data.get("model", DEFAULT_FREE_MODEL)
+    style = data.get("style", DEFAULT_GENERATE_STYLE)
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            temperature=0.9,
-            stream=True,
-        )
-        chunks = []
-        for chunk in resp:
-            if chunk.choices and chunk.choices[0].delta.content:
-                chunks.append(chunk.choices[0].delta.content)
-        full = "".join(chunks)
-
-        full = re.sub(r"<think>.*?</think>\s*", "", full, flags=re.DOTALL)
-        # 提取 JSON
-        json_match = re.search(r'\{[\s\S]*\}', full)
-        if json_match:
-            config = json.loads(json_match.group(0))
-            return jsonify(config)
-        return jsonify({"error": "LLM 未回傳有效 JSON"}), 500
+        config = _generate_config_data(category, outline, count, model, style)
+        return jsonify(config)
     except Exception as e:
         app.logger.error("generate_config 失敗: %s", e)
         return jsonify({"error": "生成設定時發生錯誤，請稍後再試"}), 500
+
+
+@app.route("/api/generate_config_stream", methods=["POST"])
+def generate_config_stream():
+    data = request.get_json(silent=True) or {}
+    category = data.get("category", "")
+    outline = data.get("outline", "")
+    try:
+        count = int(data.get("count", 3))
+    except (ValueError, TypeError):
+        count = 3
+    count = max(2, min(count, MAX_AI_PARTICIPANTS))
+    model = data.get("model", DEFAULT_FREE_MODEL)
+    style = data.get("style", DEFAULT_GENERATE_STYLE)
+
+    def emit_ndjson(payload: dict) -> str:
+        return json.dumps(payload, ensure_ascii=False) + "\n"
+
+    @stream_with_context
+    def streaming_generator():
+        event_queue: queue.Queue = queue.Queue()
+
+        def worker():
+            try:
+                config = _generate_config_data(
+                    category,
+                    outline,
+                    count,
+                    model,
+                    style,
+                    progress_callback=lambda payload: event_queue.put(payload),
+                )
+                event_queue.put({
+                    "type": "done",
+                    "stage": "FINALIZING",
+                    "stepIndex": 3,
+                    "progress": 100,
+                    "message": "設定已生成完成。",
+                    "config": config,
+                })
+            except Exception as e:
+                app.logger.error("generate_config_stream 失敗: %s", e)
+                event_queue.put({
+                    "type": "error",
+                    "error": "生成設定時發生錯誤，請稍後再試",
+                })
+            finally:
+                event_queue.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        while True:
+            payload = event_queue.get()
+            if payload is None:
+                break
+            yield emit_ndjson(payload)
+
+    return Response(streaming_generator(), mimetype="application/x-ndjson", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
 
 
 @app.route("/api/video/<filename>")

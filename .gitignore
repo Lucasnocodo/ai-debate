@@ -5,3 +5,6 @@ __pycache__/
 .playwright-mcp/
 firebase-debug.log
 server.log
+frontend/node_modules/
+frontend/dist/
+ui-*.png
